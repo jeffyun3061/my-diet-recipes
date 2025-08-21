@@ -1,32 +1,68 @@
-# 사용자 개인정보 입력 저장/조회 — 가람 담당
-from fastapi import APIRouter, Depends, Response
-from datetime import datetime
-from app.core.deps import get_or_set_anon_id
-from app.db.init import get_db
-from app.db.models.user_prefs import UserPrefsIn, UserPrefsDoc
-from app.services.reco import calc_target_kcal
+# routes_prefs.py
+from fastapi import APIRouter, HTTPException
+from pymongo import MongoClient
+from bson import ObjectId
+from user_prefs import UserPrefs, Goal
 
 router = APIRouter()
 
-@router.post("")
-async def upsert_prefs(payload: UserPrefsIn, response: Response, anon_id: str = Depends(get_or_set_anon_id)):
-    # 서버 계산 (kcal 타깃 + goal)
-    kcal_target = calc_target_kcal(payload.weight_kg, payload.target_weight_kg, payload.period_days)
-    goal = "loss" if payload.target_weight_kg < payload.weight_kg else ("gain" if payload.target_weight_kg > payload.weight_kg else "maintain")
+# MongoDB 연결
+client = MongoClient("mongodb://localhost:27017/")
+db = client["recipes"]
+prefs_collection = db["user_prefs"]
 
-    # 문서 구성
-    doc = UserPrefsDoc(**payload.model_dump(), kcal_target=kcal_target, diet_goal=goal, updated_at=datetime.utcnow(), anon_id=anon_id)
+# ======================
+# 1) 사용자 체형/목적 정보 저장
+# ======================
+@router.post("/prefs/")
+def create_user_prefs(prefs: UserPrefs):
+    data = prefs.dict()
+    result = prefs_collection.insert_one(data)
+    return {"message": "사용자 선호 정보 저장 완료", "id": str(result.inserted_id)}
 
-    # upsert
-    db = get_db()
-    await db["user_preferences"].update_one({"anon_id": anon_id}, {"$set": doc.model_dump()}, upsert=True)
+# ======================
+# 2) 단일 사용자 정보 조회 (_id 기반)
+# ======================
+@router.get("/prefs/{user_id}")
+def get_user_prefs(user_id: str):
+    try:
+        obj_id = ObjectId(user_id)
+    except:
+        raise HTTPException(status_code=400, detail="유효하지 않은 ID 형식입니다.")
 
-    # 응답 (프론트 프리필/알림용)
-    return {"ok": True, "kcal_target": kcal_target, "diet_goal": goal, "mode": "upserted"}
+    user_data = prefs_collection.find_one({"_id": obj_id})
+    if not user_data:
+        raise HTTPException(status_code=404, detail="사용자 정보를 찾을 수 없습니다.")
 
-@router.get("")
-async def get_prefs(anon_id: str = Depends(get_or_set_anon_id)):
-    # 저장된 값 조회 (프리필)
-    db = get_db()
-    doc = await db["user_preferences"].find_one({"anon_id": anon_id}, {"_id": 0})
-    return {"prefs": doc}
+    user_data["_id"] = str(user_data["_id"])
+    return user_data
+
+# ======================
+# 3) 사용자 목표 기반 레시피 추천
+# ======================
+@router.get("/prefs/{user_id}/recommend")
+def recommend_recipe(user_id: str):
+    try:
+        obj_id = ObjectId(user_id)
+    except:
+        raise HTTPException(status_code=400, detail="유효하지 않은 ID 형식입니다.")
+
+    user_data = prefs_collection.find_one({"_id": obj_id})
+    if not user_data:
+        raise HTTPException(status_code=404, detail="사용자 정보를 찾을 수 없습니다.")
+
+    goals = user_data.get("goals", [])
+
+    # 목표별 추천 메시지 생성 (실제 로직은 추후 연결)
+    recommendations = []
+    for goal in goals:
+        if goal == Goal.diet.value:
+            recommendations.append("저칼로리 다이어트 레시피 5가지")
+        elif goal == Goal.bulk.value:
+            recommendations.append("단백질 풍부한 근육 강화 레시피 5가지")
+        elif goal == Goal.high_protein_low_carb.value:
+            recommendations.append("고단백 저탄수 레시피 5가지")
+        elif goal == Goal.maintain.value:
+            recommendations.append("균형 잡힌 일반 레시피 5가지")
+
+    return {"user_id": str(user_data["_id"]), "goals": goals, "recommendations": recommendations}
