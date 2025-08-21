@@ -1,63 +1,273 @@
-# 사진 업로드/분석/추천 — 시완(분석) + 지용(크롤/점수)
-from fastapi import APIRouter, UploadFile, File, Depends
-from typing import List
-from datetime import datetime
-from app.core.deps import get_or_set_anon_id
-from app.db.init import get_db
-from app.services.analyze import analyze_labels
-from app.services.crawl_10000 import crawl_by_ingredients_norm
-from app.services.reco import score_recipe
+# app/api/routes_photo.py
+import os
+import uuid
+from typing import Dict, List
+from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi.responses import FileResponse
+from pathlib import Path
+from PIL import Image
 
-router = APIRouter()
+router = APIRouter(prefix="/photo", tags=["photo"])
 
-@router.post("/analyze")
-async def analyze_photo(file: UploadFile = File(...), anon_id: str = Depends(get_or_set_anon_id)):
-    # 시완: 여기서 Google Lens/GCV를 붙여서 analyze_labels 내부를 교체하면 됨
-    image_bytes = await file.read()
-    labels: List[str] = analyze_labels(image_bytes)
+# 업로드 디렉토리 설정
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-    # 선택: 이미지/라벨 메타 저장 (추후 학습/통계용)
-    db = get_db()
-    img_doc = {"anon_id": anon_id, "filename": file.filename, "labels": labels, "created_at": datetime.utcnow()}
-    await db["images"].insert_one(img_doc)
+# 허용되는 이미지 확장자
+ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
 
-    return {"labels": labels}
+def validate_image_file(file: UploadFile) -> None:
+    """업로드된 파일 유효성 검증"""
+    # 파일 확장자 검증
+    file_extension = Path(file.filename).suffix.lower()
+    if file_extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"지원하지 않는 파일 형식입니다. 허용된 형식: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    
+    # 파일 크기 검증
+    if file.size and file.size > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"파일 크기가 너무 큽니다. 최대 크기: {MAX_FILE_SIZE // (1024*1024)}MB"
+        )
 
-@router.post("/recommend")
-async def photo_recommend(file: UploadFile = File(...), top_k: int = 10, anon_id: str = Depends(get_or_set_anon_id)):
-    # 1) 사진 → 라벨
-    image_bytes = await file.read()
-    labels: List[str] = analyze_labels(image_bytes)
+def get_image_info(file_path: str) -> Dict:
+    """이미지 기본 정보 추출"""
+    try:
+        with Image.open(file_path) as img:
+            return {
+                "width": img.width,
+                "height": img.height,
+                "format": img.format,
+                "mode": img.mode,
+                "size_mb": round(os.path.getsize(file_path) / (1024*1024), 2)
+            }
+    except Exception as e:
+        return {"error": f"이미지 정보 추출 실패: {str(e)}"}
 
-    # 2) 라벨 → 크롤 (지용: 실제 구현 교체)
-    crawled = crawl_by_ingredients_norm(labels, limit=top_k)
+@router.post("/upload")
+async def upload_photo(
+    file: UploadFile = File(..., description="업로드할 음식 이미지")
+) -> Dict:
+    """
+    1단계: 음식 이미지 업로드
+    - 이미지 파일을 서버에 저장
+    - 기본 이미지 정보 반환
+    """
+    # 파일 유효성 검증
+    validate_image_file(file)
+    
+    # 고유한 파일명 생성 (UUID + 원본 확장자)
+    file_id = str(uuid.uuid4())
+    file_extension = Path(file.filename).suffix.lower()
+    filename = f"{file_id}{file_extension}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+    
+    try:
+        # 파일 저장
+        with open(file_path, "wb") as buffer:
+            content = await file.read()
+            buffer.write(content)
+        
+        # 이미지 기본 정보 추출
+        image_info = get_image_info(file_path)
+        
+        # 업로드 성공 응답
+        return {
+            "status": "success",
+            "message": "이미지가 성공적으로 업로드되었습니다.",
+            "file_id": file_id,
+            "original_filename": file.filename,
+            "saved_filename": filename,
+            "file_path": f"/photo/view/{file_id}",  # 이미지 보기 URL
+            "upload_path": file_path,
+            "image_info": image_info
+        }
+        
+    except Exception as e:
+        # 오류 발생 시 파일 삭제
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except:
+                pass
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"이미지 업로드 중 오류가 발생했습니다: {str(e)}"
+        )
 
-    # 3) 크롤 결과를 표준 스키마로 DB upsert
-    db = get_db()
-    upserted = []
-    for r in crawled:
-        r["updated_at"] = datetime.utcnow()
-        r.setdefault("created_at", datetime.utcnow())
-        await db["recipes"].update_one({"title": r["title"]}, {"$set": r}, upsert=True)
-        upserted.append(r)
+@router.get("/list")
+async def get_uploaded_photos() -> Dict:
+    """업로드된 이미지 목록 조회"""
+    try:
+        photos = []
+        
+        if os.path.exists(UPLOAD_DIR):
+            for filename in os.listdir(UPLOAD_DIR):
+                if any(filename.lower().endswith(ext) for ext in ALLOWED_EXTENSIONS):
+                    file_path = os.path.join(UPLOAD_DIR, filename)
+                    file_stat = os.stat(file_path)
+                    
+                    # 파일명에서 UUID 추출 (확장자 제거)
+                    file_id = Path(filename).stem
+                    
+                    photos.append({
+                        "file_id": file_id,
+                        "filename": filename,
+                        "size_mb": round(file_stat.st_size / (1024*1024), 2),
+                        "uploaded_at": file_stat.st_ctime,
+                        "view_url": f"/photo/view/{file_id}"
+                    })
+        
+        # 최신 업로드 순으로 정렬
+        photos.sort(key=lambda x: x['uploaded_at'], reverse=True)
+        
+        return {
+            "status": "success",
+            "total_count": len(photos),
+            "photos": photos
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"파일 목록 조회 중 오류: {str(e)}"
+        )
 
-    # 4) 개인 타깃 kcal (없으면 기본 1800)
-    prefs = await db["user_preferences"].find_one({"anon_id": anon_id})
-    target_kcal = prefs.get("kcal_target", 1800) if prefs else 1800
+@router.delete("/delete/{file_id}")
+async def delete_photo(file_id: str) -> Dict:
+    """업로드된 이미지 삭제"""
+    try:
+        deleted_files = []
+        
+        if os.path.exists(UPLOAD_DIR):
+            for filename in os.listdir(UPLOAD_DIR):
+                # file_id로 시작하는 파일 찾기
+                if filename.startswith(file_id):
+                    file_path = os.path.join(UPLOAD_DIR, filename)
+                    os.remove(file_path)
+                    deleted_files.append(filename)
+        
+        if not deleted_files:
+            raise HTTPException(
+                status_code=404,
+                detail=f"파일 ID '{file_id}'에 해당하는 파일을 찾을 수 없습니다."
+            )
+        
+        return {
+            "status": "success",
+            "message": f"{len(deleted_files)}개 파일이 삭제되었습니다.",
+            "deleted_files": deleted_files
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"파일 삭제 중 오류: {str(e)}"
+        )
 
-    # 5) 점수화 후 상위 K 반환
-    scored = sorted(upserted, key=lambda x: score_recipe(x, target_kcal), reverse=True)[:top_k]
+@router.get("/view/{file_id}")
+async def view_photo(file_id: str):
+    """
+    2단계: 업로드된 사진 보기
+    - file_id로 이미지 파일을 찾아서 반환
+    """
+    try:
+        # file_id로 시작하는 파일 찾기
+        found_file = None
+        
+        if os.path.exists(UPLOAD_DIR):
+            for filename in os.listdir(UPLOAD_DIR):
+                if filename.startswith(file_id):
+                    found_file = filename
+                    break
+        
+        if not found_file:
+            raise HTTPException(
+                status_code=404,
+                detail=f"파일 ID '{file_id}'에 해당하는 이미지를 찾을 수 없습니다."
+            )
+        
+        file_path = os.path.join(UPLOAD_DIR, found_file)
+        
+        # 파일 존재 확인
+        if not os.path.exists(file_path):
+            raise HTTPException(
+                status_code=404,
+                detail="이미지 파일이 존재하지 않습니다."
+            )
+        
+        # 이미지 파일 반환
+        return FileResponse(
+            file_path,
+            media_type="image/jpeg",
+            filename=found_file
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"이미지 조회 중 오류: {str(e)}"
+        )
 
+@router.get("/info/{file_id}")
+async def get_photo_info(file_id: str) -> Dict:
+    """특정 이미지의 상세 정보 조회"""
+    try:
+        # file_id로 시작하는 파일 찾기
+        found_file = None
+        
+        if os.path.exists(UPLOAD_DIR):
+            for filename in os.listdir(UPLOAD_DIR):
+                if filename.startswith(file_id):
+                    found_file = filename
+                    break
+        
+        if not found_file:
+            raise HTTPException(
+                status_code=404,
+                detail=f"파일 ID '{file_id}'에 해당하는 이미지를 찾을 수 없습니다."
+            )
+        
+        file_path = os.path.join(UPLOAD_DIR, found_file)
+        file_stat = os.stat(file_path)
+        image_info = get_image_info(file_path)
+        
+        return {
+            "status": "success",
+            "file_id": file_id,
+            "filename": found_file,
+            "file_path": f"/photo/view/{file_id}",
+            "upload_date": file_stat.st_ctime,
+            "size_mb": round(file_stat.st_size / (1024*1024), 2),
+            "image_info": image_info
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"이미지 정보 조회 중 오류: {str(e)}"
+        )
+
+@router.get("/health")
+async def photo_service_health():
+    """사진 업로드 서비스 상태 확인"""
     return {
-        "labels": labels,
-        "target": {"kcal": target_kcal, "goal": (prefs["diet_goal"] if prefs else "loss")},
-        "items": [{
-            "title": r["title"],
-            "calories": r["nutrition"]["calories"],
-            "macros": {"protein": r["nutrition"]["protein_g"], "carb": r["nutrition"]["carb_g"], "fat": r["nutrition"]["fat_g"]},
-            "tags": r["tags"],
-            "timeMin": r["time_min"],
-            "thumbnail": r.get("thumbnail"),
-            "source": r["source"]
-        } for r in scored]
+        "status": "ok",
+        "service": "photo_upload",
+        "upload_directory": UPLOAD_DIR,
+        "upload_dir_exists": os.path.exists(UPLOAD_DIR),
+        "max_file_size_mb": MAX_FILE_SIZE // (1024*1024),
+        "allowed_extensions": list(ALLOWED_EXTENSIONS),
+        "message": "사진 업로드 서비스가 정상 작동 중입니다."
     }

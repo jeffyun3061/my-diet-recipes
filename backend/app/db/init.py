@@ -13,20 +13,17 @@ def _db_name() -> str:
     return os.getenv("MONGODB_DB") or "mydiet"
 
 async def init_mongo() -> None:
-    # 앱 시작 시 한 번 호출되어 Mongo 연결
     global _client, _db
     _client = AsyncIOMotorClient(_uri())
     _db = _client[_db_name()]
     await _db.command("ping")  # 연결 확인
 
 def get_db():
-    # 라우트/서비스에서 DB 객체를 가져갈 때 사용
     if _db is None:
         raise RuntimeError("MongoDB is not initialized yet.")
     return _db
 
 async def close_mongo() -> None:
-    # 앱 종료 시 연결 닫기
     global _client
     if _client is not None:
         _client.close()
