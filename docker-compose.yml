@@ -7,6 +7,8 @@ services:
     environment:
       - MONGODB_URI=mongodb://mongo:27017
       - MONGODB_DB=mydiet
+      - MONGO_URI=${MONGO_URI}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     ports:
       - "8000:8000"
     depends_on:

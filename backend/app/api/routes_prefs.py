@@ -1,48 +1,85 @@
+# app/api/routes_prefs.py
 # 사용자 개인정보 입력 저장/조회 — 가람 담당
-from fastapi import APIRouter, Depends, Response
-from datetime import datetime
+
+from fastapi import APIRouter, Depends, Response, HTTPException, Request
+from datetime import datetime, timezone
+
+
 from app.core.deps import get_or_set_anon_id
 from app.db.init import get_db
-from app.db.models.user_prefs import UserPrefsIn, UserPrefsDoc
+from app.db.models.schemas import PreferencesIn
 from app.services.reco import calc_target_kcal
 
-router = APIRouter()
+# ▼ prefix 추가 (중요)
+router = APIRouter(prefix="/preferences", tags=["preferences"])
 
 @router.post("")
-async def upsert_prefs(payload: UserPrefsIn, response: Response, anon_id: str = Depends(get_or_set_anon_id)):
-    # 서버 계산: kcal 타깃 + goal
-    kcal_target = calc_target_kcal(payload.weight_kg, payload.target_weight_kg, payload.period_days)
+async def upsert_prefs(
+    payload: PreferencesIn,
+    response: Response,
+    anon_id: str = Depends(get_or_set_anon_id),  # 쿠키 발급
+):
+    # 서버 계산 — camelCase 필드 접근
+    w = payload.weightKg or 0
+    t = payload.targetWeightKg or w
+    d = payload.periodDays or 0
 
-    if payload.target_weight_kg < payload.weight_kg:
+    try:
+        kcal_target = calc_target_kcal(w, t, d)
+    except Exception:
+        kcal_target = None
+
+    if t < w:
         goal = "loss"
-    elif payload.target_weight_kg > payload.weight_kg:
+    elif t > w:
         goal = "gain"
     else:
         goal = "maintain"
 
-    # DB 문서
-    doc = UserPrefsDoc(
-        **payload.model_dump(),
-        anon_id=anon_id,
-        kcal_target=kcal_target,
-        diet_goal=goal,
-        updated_at=datetime.utcnow()
-    )
+    now = datetime.now(timezone.utc).isoformat()
 
-    # upsert
+    # DB 저장은 snake_case로 표준화 (조회/분석 편함)
+    doc = {
+        "anon_id": anon_id,
+        "weight_kg": payload.weightKg,
+        "target_weight_kg": payload.targetWeightKg,
+        "period_days": payload.periodDays,
+        "diet": payload.diet,
+        "diet_tags": payload.dietTags,
+        "max_cook_minutes": payload.maxCookMinutes,
+        "allergies": payload.allergies,
+        "age": payload.age,
+        "height_cm": payload.heightCm,
+        "sex": payload.sex,
+        "activity_level": payload.activityLevel,
+        "calorie_target": payload.calorie_target,
+        "kcal_target": kcal_target,
+        "diet_goal": goal,
+        "updated_at": now,
+    }
+
     db = get_db()
+    prev = await db["user_preferences"].find_one({"anon_id": anon_id})
+    if not prev:
+        doc["created_at"] = now
+
     await db["user_preferences"].update_one(
         {"anon_id": anon_id},
-        {"$set": doc.model_dump()},
+        {"$set": doc},
         upsert=True
     )
 
-    # 응답
-    return {"ok": True, "kcal_target": kcal_target, "diet_goal": goal, "mode": "upserted"}
+    return {
+        "ok": True,
+        "anonId": anon_id,
+        "kcal_target": kcal_target,
+        "diet_goal": goal,
+        "saved": doc,
+        "mode": "upserted" if prev else "inserted",
+    }
 
 @router.get("")
-async def get_prefs(anon_id: str = Depends(get_or_set_anon_id)):
-    # 저장된 값 조회 (프리필)
+async def get_prefs(request: Request, anon_id: str = Depends(get_or_set_anon_id)):
     db = get_db()
     doc = await db["user_preferences"].find_one({"anon_id": anon_id}, {"_id": 0})
-    return {"prefs": doc}
+    return {"ok": True, "anonId": anon_id, "prefs": (doc or {})}

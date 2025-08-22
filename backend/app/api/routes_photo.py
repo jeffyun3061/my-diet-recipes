@@ -4,6 +4,7 @@ from typing import List
 from datetime import datetime
 from app.core.deps import get_or_set_anon_id
 from app.db.init import get_db
+from app.db.models.schemas import RecipeRecommendationOut
 from app.services.analyze import analyze_labels
 from app.services.crawl_10000 import crawl_by_ingredients_norm
 from app.services.reco import score_recipe, calc_target_kcal

@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 앱 코드 복사
 COPY app ./app
+ENV PYTHONPATH=/app
 
 # 컨테이너 기본 명령 (개발 중 핫리로드 쓰려면 compose 쪽 command로 오버라이드)
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

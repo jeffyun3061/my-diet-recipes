@@ -5,3 +5,5 @@ python-multipart==0.0.9
 httpx==0.27.2
 lxml
 beautifulsoup4
+pydantic-settings
+openai>=1.0.0
