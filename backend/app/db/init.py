@@ -1,36 +1,39 @@
 # app/db/init.py
+# Mongo 연결 유틸 — motor (on_event용)
+
+from __future__ import annotations
 import os
-from motor.motor_asyncio import AsyncIOMotorClient
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 
-_client = None
-_db = None
+_client: AsyncIOMotorClient | None = None
+_db: AsyncIOMotorDatabase | None = None
 
-def _uri() -> str:
-    # 로컬: mongodb://localhost:27017 / 도커: mongodb://mongo:27017
-    return os.getenv("MONGODB_URI") or "mongodb://localhost:27017"
-
-def _db_name() -> str:
-    return os.getenv("MONGODB_DB") or "mydiet"
-
-async def init_mongo() -> None:
-    # 앱 시작 시 한 번 호출되어 Mongo 연결
+async def init_db() -> AsyncIOMotorDatabase:
+    # 앱 시작 시 1회 호출해서 전역 커넥션 구성
     global _client, _db
     if _db is not None:
-        return
-    _client = AsyncIOMotorClient(_uri())
-    _db = _client[_db_name()]
-    # 연결 확인
-    await _db.command("ping")
+        return _db
 
-def get_db():
-    # 라우트/서비스에서 DB 객체를 가져갈 때 사용
+    uri = os.getenv("MONGODB_URI", "mongodb://mydiet-mongo:27017")
+    name = os.getenv("MONGODB_DB", "mydiet")
+
+    _client = AsyncIOMotorClient(uri)
+    _db = _client[name]
+
+    # 연결 확인 (준비 안 됐으면 예외)
+    await _db.command("ping")
+    return _db
+
+def get_db() -> AsyncIOMotorDatabase:
+    #라우터에서 쓰는 핸들. 미초기화면 예외 발생
     if _db is None:
         raise RuntimeError("MongoDB is not initialized yet.")
     return _db
 
-async def close_mongo() -> None:
-    # 앱 종료 시 연결 닫기
-    global _client
-    if _client is not None:
+async def close_db() -> None:
+    #앱 종료 시 커넥션 정리
+    global _client, _db
+    if _client:
         _client.close()
-        _client = None
+    _client = None
+    _db = None

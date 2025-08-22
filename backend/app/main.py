@@ -1,55 +1,104 @@
 # app/main.py
-# FastAPI 엔트리 — 초기화/종료 훅, CORS, 인덱스 보장, 라우터 등록
+# FastAPI 앱 초기화 및 라우터 설정
+# 라우터는 각 기능별로 분리하여 관리
 
+from __future__ import annotations
+
+from asyncio import sleep
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# DB 연결/종료 + 인덱스 생성
-from app.db.init import init_mongo, close_mongo, get_db
-from app.db.indexes import ensure_indexes
-
-# 팀별 라우터
 from app.api.routes_prefs import router as prefs_router       # 가람: 사용자 입력/저장/조회
-from app.api.routes_photo import router as photo_router       # 시완: 사진 업로드/분석/추천
 from app.api.routes_recipes import router as recipes_router   # 지용: 레시피 검색/확장
 
-app = FastAPI(title="My Diet Recipes - API")
+try:
+    from app.api.routes_photo import router as photo_router   # 지용: 사진 분석/추천
+    _HAS_PHOTO = True
+except Exception:
+    _HAS_PHOTO = False
 
-# CORS (프론트 로컬 개발 편의; 배포 시 도메인 제한 권장)
+# DB 초기화/인덱스
+# init_db/close_db: 앱 시작/종료 시 커넥션 생성/정리
+# get_db: 런타임에 DB 핸들 얻기
+try:
+    from app.db.init import get_db, init_db, close_db
+    from app.db.indexes import ensure_indexes
+except Exception:  # 초기 부팅 유연성
+    get_db = None
+    init_db = None
+    close_db = None
+    ensure_indexes = None
+
+app = FastAPI(title="My Diet Recipes - API", version="0.1.0")
+
+# CORS: 프론트 localhost:3000 허용 + 쿠키 전달
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],            # TODO: 배포 시 특정 도메인만 허용
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        # 필요 시 5173 등 추가
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- 앱 라이프사이클 ----------
+# 앱 시작/종료 이벤트 핸들러
 @app.on_event("startup")
-async def on_startup():
-    # 1) Mongo 연결
-    await init_mongo()
-    # 2) 컬렉션 인덱스 보장 (await 필수)
-    await ensure_indexes()
+async def on_startup() -> None:
+    # 1) DB 먼저 붙는다 (최대 20회, 1초 간격)
+    db = None
+    if init_db:
+        for i in range(20):
+            try:
+                db = await init_db()
+                print("[startup] db ready")
+                break
+            except Exception as e:
+                print(f"[startup] db init retry {i+1}: {e}")
+                await sleep(1.0)
+        if db is None:
+            print("[startup] db init failed after retries")
+            return
+
+    # 2) 인덱스 보장
+    if ensure_indexes and db is not None:
+        try:
+            await ensure_indexes(db)
+            print("[startup] indexes ensured")
+        except Exception as e:
+            print(f"[startup] ensure_indexes failed: {e}")
 
 @app.on_event("shutdown")
-async def on_shutdown():
-    # 종료 시 연결 닫기
-    await close_mongo()
-# ------------------------------------
+async def on_shutdown() -> None:
+    # 몽고db 커넥션 정리
+    if close_db:
+        try:
+            await close_db()
+        except Exception:
+            pass
 
-# 루트/헬스체크
 @app.get("/")
 async def root():
-    return {"ok": True, "message": "API is up"}
+    return {"status": "ok"}
 
 @app.get("/health")
 async def health():
-    db = get_db()
-    await db.command("ping")
-    return {"status": "ok", "db": "ok"}
+    # 간단한 헬스체크(필요하면 DB ping 추가)
+    ok = {"status": "ok", "db": "skip"}
+    if get_db:
+        try:
+            db = get_db()
+            # 필요 시 MongoDB ping
+            await db.command("ping")
+            ok["db"] = "ok"
+        except Exception as e:
+            ok["db"] = f"error: {e}"
+    return ok
 
-# 라우터 등록 (역할별로 분리)
-app.include_router(prefs_router,   prefix="/preferences", tags=["preferences"])  # 가람
-app.include_router(photo_router,   prefix="/photo",       tags=["photo"])        # 시완(+지용)
-app.include_router(recipes_router, prefix="/recipes",     tags=["recipes"])      # 지용
+# 라우터 prefix는 각 파일 내에서 정의함 , 중복 prefix 금지
+app.include_router(prefs_router)
+app.include_router(recipes_router)
+if _HAS_PHOTO:
+    app.include_router(photo_router)

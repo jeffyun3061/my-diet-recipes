@@ -1,12 +1,10 @@
-# app/models/schemas.py
+# app/db/models/schemas.py
 # Pydantic 모델 정의
-# - PreferencesIn: 개인정보/목표 입력 (유연 필드, 대부분 optional)
-
-
+# PreferencesIn: 개인정보/목표 입력 (유연 필드, 대부분 optional)
+# RecipeRecommendationOut: 프론트 카드 스키마
 from __future__ import annotations
 from typing import List, Optional
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, Field, ConfigDict
 
 # # 프론트 카드 타입 (배열로 반환)
 class RecipeRecommendationOut(BaseModel):
@@ -19,9 +17,15 @@ class RecipeRecommendationOut(BaseModel):
     imageUrl: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
 
+# # 텍스트(재료) 기반 추천 입력
+class RecipeRecommendIn(BaseModel):
+    ingredients: List[str] = Field(default_factory=list)
 
 # # 개인정보/목표 입력 — 프론트 폼 대응 (optional로 두어 폼 확장 여지)
 class PreferencesIn(BaseModel):
+    # ▼ 프론트는 camelCase로 보내므로 alias 허용 (특히 calorieTarget)
+    model_config = ConfigDict(populate_by_name=True)
+
     # 익명 식별 (없으면 서버가 쿠키로 발급)
     anon_id: Optional[str] = None
 
@@ -36,9 +40,11 @@ class PreferencesIn(BaseModel):
     maxCookMinutes: Optional[int] = None
     allergies: Optional[List[str]] = None
 
-    # 추가 정보(폼 확장 대비)
+    # 추가 정보
     age: Optional[int] = None
-    heightCm: Optional[int] = None
+    heightCm: Optional[float] = None
     sex: Optional[str] = None                  # "male" | "female" 등
     activityLevel: Optional[str] = None        # "low" | "mid" | "high"
-    calorie_target: Optional[int] = None
+
+    # 프론트 calorieTarget(camel)로 보내면 calorie_target에 매핑
+    calorie_target: Optional[int] = Field(default=None, alias="calorieTarget")
