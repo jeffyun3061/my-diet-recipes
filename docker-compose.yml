@@ -1,0 +1,24 @@
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mydiet-api
+    environment:
+      - MONGODB_URI=mongodb://mongo:27017
+      - MONGODB_DB=mydiet
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongo
+
+  mongo:
+    image: mongo:6
+    container_name: mydiet-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+volumes:
+  mongo_data:
