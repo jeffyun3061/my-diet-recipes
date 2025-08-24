@@ -8,6 +8,7 @@ from fastapi import APIRouter, UploadFile, File, Request, Response, HTTPExceptio
 from app.db.init import get_db
 from app.core.deps import get_or_set_anon_id
 from app.db.models.schemas import RecipeRecommendationOut
+from app.services.crawl10000.recommender import hybrid_recommend
 from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
 from app.services.utils import normalize_many
 
@@ -70,17 +71,33 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> List[str]:
 
 
 async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
+
+    # 기존 단순 find/sort 대신 하이브리드 추천으로 교체.
+    # tokens: 비전/LLM에서 추출한 slug 리스트
+
     db = get_db()
-    cond = {"ingredients.norm": {"$in": tokens}} if tokens else {}
-    docs = await db["recipes"].find(cond).limit(24).to_list(length=24)
 
-    # 간단 스코어링: 매칭 개수 기준
-    def score(d: Dict[str, Any]) -> int:
-        norm = set(d.get("ingredients", {}).get("norm", [])) if isinstance(d.get("ingredients"), dict) else set()
-        return sum(1 for t in tokens if t in norm)
+    # (필요 시) 사용자 식단 라벨을 프리미엄 가점으로 반영하고 싶다면 여기서 꺼내서 넣으면 됨.
+    # ex) prefs = await db["preferences"].find_one({"anon_id": ...})
+    user_diet = ""  # TODO: "lowcarb" 등 내부 태그 문자열로 매핑해 넣으면 가점(+0.05)
 
-    docs.sort(key=score, reverse=True)
-    return [_to_card(d) for d in docs]
+    # 하이브리드 추천 호출 → 프론트 카드 스키마에 맞춘 dict 리스트 반환
+    cards = await hybrid_recommend(db["recipes"], tokens, user_diet=user_diet, top_k=24)
+
+    # Pydantic 모델로 변환하여 반환 (기존 response_model 유지)
+    return [
+        RecipeRecommendationOut(
+            id=c.get("id", ""),
+            title=c.get("title", ""),
+            description=c.get("description", ""),
+            ingredients=c.get("ingredients", []),
+            steps=c.get("steps", []),
+            imageUrl=c.get("imageUrl", ""),
+            tags=c.get("tags", []),
+        )
+        for c in cards
+    ]
+
 
 
 @router.post("/recommend", response_model=List[RecipeRecommendationOut])

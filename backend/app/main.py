@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes_prefs import router as prefs_router       # 가람: 사용자 입력/저장/조회
 from app.api.routes_recipes import router as recipes_router   # 지용: 레시피 검색/확장
+from app.api.routes_crawl import router as crawl_router     # 지용: 크롤링/ETL/임베딩
 
 try:
     from app.api.routes_photo import router as photo_router   # 지용: 사진 분석/추천
@@ -100,5 +101,7 @@ async def health():
 # 라우터 prefix는 각 파일 내에서 정의함 , 중복 prefix 금지
 app.include_router(prefs_router)
 app.include_router(recipes_router)
+app.include_router(crawl_router)
+
 if _HAS_PHOTO:
     app.include_router(photo_router)
