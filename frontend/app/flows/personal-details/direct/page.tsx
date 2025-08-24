@@ -14,6 +14,8 @@ import {
 } from "@mui/material";
 import { DIET_OPTIONS } from "@/data/dietOptions";
 import { useState } from "react";
+import { useRouter } from "next/navigation";           // 추가
+import { postPreferences } from "@/lib/api";           // 추가 
 
 export default function DirectInputPage() {
   const [gender, setGender] = useState<string>("");
@@ -21,6 +23,8 @@ export default function DirectInputPage() {
   const [height, setHeight] = useState("160");
   const [weight, setWeight] = useState("50");
   const [diet, setDiet] = useState("");
+  const [submitting, setSubmitting] = useState(false);  // 추가
+  const router = useRouter();                           // 추가
 
   const handleGenderChange = (
     event: React.MouseEvent<HTMLElement>,
@@ -31,17 +35,42 @@ export default function DirectInputPage() {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e: React.FormEvent) => {   //async 로 변경
+  e.preventDefault();
 
-    if (!gender) {
-      alert("성별을 선택해주세요.");
-      return;
-    }
+  if (!gender) {
+    alert("성별을 선택해주세요.");
+    return;
+  }
+  if (!diet) {
+    alert("다이어트 방식을 선택해주세요.");
+    return;
+  }
 
-    console.log({ gender, age, height, weight, diet });
-    alert("입력이 완료되었습니다.");
-  };
+  // 프론트 값 → 백엔드 기대 라벨로 매핑
+  const sexLabel = gender === "male" ? "남성" : "여성";
+  const dietLabel = DIET_OPTIONS.find((o) => o.value === diet)?.label ?? diet;
+
+  try {
+    setSubmitting(true);
+
+    await postPreferences({
+      sex: sexLabel,
+      age: Number(age),
+      heightCm: Number(height),
+      weightKg: Number(weight),
+      diet: dietLabel, // 예: "저탄고지"
+    });
+
+    // 저장 성공 → 업로드 페이지로 이동
+    router.push("/recipes");
+  } catch (err) {
+    alert(err instanceof Error ? err.message : "개인정보 저장 중 오류가 발생했습니다.");
+  } finally {
+    setSubmitting(false);
+  }
+};
+
 
   return (
     <Box component="form" onSubmit={handleSubmit}>

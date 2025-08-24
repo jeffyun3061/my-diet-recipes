@@ -14,7 +14,8 @@ import {
   createImageId,
   MAX_IMAGES,
 } from "@/data/imageUtils";
-import { mockRecommendRecipes } from "@/lib/api";
+// import { mockRecommendRecipes } from "@/lib/api";  // 실제 API 호출로 교체
+import { recommendRecipes } from "@/lib/api";
 
 export default function RecipesPage() {
   const [images, setImages] = useState<UploadedImage[]>([]);
@@ -77,7 +78,8 @@ export default function RecipesPage() {
     setError("");
 
     try {
-      const recommendations = await mockRecommendRecipes(images);
+      // const recommendations = await mockRecommendRecipes(images);
+      const recommendations = await recommendRecipes(images);
       sessionStorage.setItem(
         "recipeRecommendations",
         JSON.stringify(recommendations)
