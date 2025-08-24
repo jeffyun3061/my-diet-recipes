@@ -45,7 +45,7 @@ def extract_ingredient_tokens(line: str) -> List[str]:
     return out
 
 def normalize_ingredients(raws: List[str]) -> List[str]:
-    """재료 문자열 배열 → slug 집합(정렬)"""
+    # 재료 문자열 배열 → slug 집합(정렬)
     found: Set[str] = set()
     for line in raws or []:
         for token in extract_ingredient_tokens(line):
@@ -55,8 +55,15 @@ def normalize_ingredients(raws: List[str]) -> List[str]:
     return sorted(found)
 
 async def ensure_indexes(recipes: AsyncIOMotorCollection):
-    # 운영 안전: 최초/부팅 시 1회만 호출해도 무방(백그라운드 인덱스)
-    await recipes.create_index("url", unique=True, background=True)
+    # URL 유니크 인덱스(문서에 url이 '문자열'로 있을 때만) + sparse
+    await recipes.create_index(
+        "url",
+        unique=True,
+        background=True,
+        sparse=True,
+        partialFilterExpression={"url": {"$type": "string", "$ne": ""}},
+        name="url_1",
+    )
     await recipes.create_index("title", background=True)
     await recipes.create_index("ingredients.norm", background=True)
     await recipes.create_index([("tags", 1)], background=True)
