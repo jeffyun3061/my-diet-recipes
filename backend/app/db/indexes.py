@@ -19,3 +19,7 @@ async def ensure_indexes():
     await db["images"].create_index([("anon_id", 1), ("created_at", -1)])
     await db["image_analyses"].create_index("image_id")
     await db["image_analyses"].create_index([("status", 1), ("created_at", -1)])
+
+    # 사진 업로드/저장 컬렉션
+    await db["photos"].create_index([("anon_id", 1), ("created_at", -1)])
+    await db["photos"].create_index("content_type")

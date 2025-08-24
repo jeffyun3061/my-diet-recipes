@@ -4,3 +4,9 @@ __pycache__/
 .env
 .git
 .vscode/
+
+.DS_Store
+Thumbs.db
+
+/frontend/
+*.log
