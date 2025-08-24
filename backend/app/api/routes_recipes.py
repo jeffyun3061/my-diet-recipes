@@ -10,7 +10,7 @@ from app.core.deps import get_or_set_anon_id
 from app.db.models.schemas import RecipeRecommendationOut
 from app.services.crawl10000.recommender import hybrid_recommend
 from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
-from app.services.utils import normalize_many
+from app.services.crawl10000.etl import normalize_ingredients
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
@@ -66,7 +66,7 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> List[str]:
 
     # 이름만 추출 → 정규화
     raw_names = [x.get("name", "") for x in items if isinstance(x, dict)]
-    tokens = normalize_many(raw_names)
+    tokens = normalize_ingredients(raw_names)
     return tokens
 
 

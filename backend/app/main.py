@@ -66,7 +66,7 @@ async def on_startup() -> None:
     # 2) 인덱스 보장
     if ensure_indexes and db is not None:
         try:
-            await ensure_indexes(db)
+            await ensure_indexes()
             print("[startup] indexes ensured")
         except Exception as e:
             print(f"[startup] ensure_indexes failed: {e}")
