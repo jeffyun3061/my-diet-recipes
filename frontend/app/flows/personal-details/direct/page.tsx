@@ -62,6 +62,8 @@ export default function DirectInputPage() {
       diet: dietLabel, // 예: "저탄고지"
     });
 
+    alert("입력이 완료되었습니다.");
+
     // 저장 성공 → 업로드 페이지로 이동
     router.push("/recipes");
   } catch (err) {

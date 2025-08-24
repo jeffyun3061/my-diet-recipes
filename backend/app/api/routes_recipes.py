@@ -1,5 +1,5 @@
 # app/api/routes_recipes.py
-# 사진 업로드 → LLM으로 재료 추출 → DB 검색 → 프론트 카드 배열 반환
+# 사진 업로드 → LLM으로 재료 추출 → 재료 정규화 → DB 검색 → 카드 배열 반환
 
 from __future__ import annotations
 from typing import List, Dict, Any
@@ -8,7 +8,8 @@ from fastapi import APIRouter, UploadFile, File, Request, Response, HTTPExceptio
 from app.db.init import get_db
 from app.core.deps import get_or_set_anon_id
 from app.db.models.schemas import RecipeRecommendationOut
-from app.services.vision_openai import extract_ingredients_from_images
+from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
+from app.services.utils import normalize_many
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
@@ -16,12 +17,10 @@ router = APIRouter(prefix="/recipes", tags=["recipes"])
 def _to_card(doc: Dict[str, Any]) -> RecipeRecommendationOut:
     title = doc.get("title") or ""
     desc = doc.get("summary") or doc.get("description") or ""
-    image = (
-        doc.get("image")
-        or (doc.get("images") or [None])[0]
-        if isinstance(doc.get("images", []), list)
-        else doc.get("image")
-    )
+    image = None
+    if isinstance(doc.get("images"), list) and doc.get("images"):
+        image = doc["images"][0]
+    image = image or doc.get("image") or ""
     tags = doc.get("tags") or doc.get("categories") or []
 
     ing_list: List[str] = []
@@ -54,11 +53,41 @@ def _to_card(doc: Dict[str, Any]) -> RecipeRecommendationOut:
     )
 
 
+async def _detect_tokens_from_bytes(imgs: List[bytes]) -> List[str]:
+    # Vision으로 재료 추출
+    try:
+        items = await extract_ingredients_from_images(imgs)
+    except VisionNotReady as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        # 기타 네트워크/모델 에러
+        raise HTTPException(status_code=503, detail=f"vision error: {e}")
+
+    # 이름만 추출 → 정규화
+    raw_names = [x.get("name", "") for x in items if isinstance(x, dict)]
+    tokens = normalize_many(raw_names)
+    return tokens
+
+
+async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
+    db = get_db()
+    cond = {"ingredients.norm": {"$in": tokens}} if tokens else {}
+    docs = await db["recipes"].find(cond).limit(24).to_list(length=24)
+
+    # 간단 스코어링: 매칭 개수 기준
+    def score(d: Dict[str, Any]) -> int:
+        norm = set(d.get("ingredients", {}).get("norm", [])) if isinstance(d.get("ingredients"), dict) else set()
+        return sum(1 for t in tokens if t in norm)
+
+    docs.sort(key=score, reverse=True)
+    return [_to_card(d) for d in docs]
+
+
 @router.post("/recommend", response_model=List[RecipeRecommendationOut])
 async def recommend_from_images(
     req: Request,
     res: Response,
-    anon_id: str = Depends(get_or_set_anon_id),  # 쿠키 보장
+    anon_id: str = Depends(get_or_set_anon_id),   # 쿠키 보장
     image_0: UploadFile = File(...),
     image_1: UploadFile | None = File(None),
     image_2: UploadFile | None = File(None),
@@ -69,42 +98,26 @@ async def recommend_from_images(
     image_7: UploadFile | None = File(None),
     image_8: UploadFile | None = File(None),
 ):
-    files = [image_0, image_1, image_2, image_3, image_4, image_5, image_6, image_7, image_8]
+    # Swagger에서 빈 문자열("")을 보내면 422가 떠서, 프론트는 반드시 "없는 필드는 아예 보내지 않기"
+    files = [f for f in [image_0, image_1, image_2, image_3, image_4, image_5, image_6, image_7, image_8] if f]
+
     imgs: List[bytes] = []
     for f in files:
-        if not f:
-            continue
         if f.content_type not in ("image/jpeg", "image/png", "image/webp"):
             raise HTTPException(status_code=415, detail="지원하지 않는 이미지 형식입니다.")
         imgs.append(await f.read())
+
     if not imgs:
         raise HTTPException(status_code=400, detail="이미지가 필요합니다.")
 
-    # LLM으로 재료 추출 (실패시 503으로 전달)
-    try:
-        detected = await extract_ingredients_from_images(imgs)
-    except Exception as e:
-        # VisionNotReady / 네트워크 / 포맷오류 등 모두 여기서 잡힘
-        raise HTTPException(status_code=503, detail=str(e))
-    tokens = [x["name"] for x in detected if x.get("name")]
-
-    # DB 검색
-    db = get_db()
-    cond = {"ingredients.norm": {"$in": tokens}} if tokens else {}
-    docs = await db["recipes"].find(cond).limit(24).to_list(length=24)
-
-    # 간단 스코어링(매칭 개수 기준) — 추후 가중치/임베딩 혼합 확장 가능
-    def score(d: Dict[str, Any]) -> int:
-        norm = set(d.get("ingredients", {}).get("norm", [])) if isinstance(d.get("ingredients"), dict) else set()
-        return sum(1 for t in tokens if t in norm)
-
-    docs.sort(key=score, reverse=True)
-    cards = [_to_card(d) for d in docs]
+    tokens = await _detect_tokens_from_bytes(imgs)
+    cards = await _search_recipes(tokens)
 
     # 추천 이력 저장(옵션)
+    db = get_db()
     await db["recommendations"].insert_one({
         "anon_id": anon_id,
-        "used": {"ingredients": detected},
+        "used": {"tokens": tokens},
         "result_ids": [c.id for c in cards],
         "created_at": __import__("datetime").datetime.utcnow(),
     })
@@ -112,52 +125,31 @@ async def recommend_from_images(
     return [c.model_dump() for c in cards]
 
 
-# (보조) Swagger/포스트맨에서 여러 장 올리기 쉬운 버전
-@router.post("/recommend/files", response_model=List[RecipeRecommendationOut], tags=["recipes"])
+@router.post("/recommend/files", response_model=List[RecipeRecommendationOut])
 async def recommend_from_files(
-    files: List[UploadFile] = File(..., description="이미지 파일들 (여러 장 가능)"),
+    req: Request,
+    res: Response,
     anon_id: str = Depends(get_or_set_anon_id),
+    files: List[UploadFile] = File(..., description="이미지 파일들 (여러 장 가능)"),
 ):
-    # 파일 검증/읽기
-    if not files:
-        raise HTTPException(status_code=400, detail="이미지가 필요합니다.")
-
+    # 진짜 파일만 필터
+    valid_files = [f for f in files if f and f.filename]
     imgs: List[bytes] = []
-    for f in files:
-        if not f or not getattr(f, "filename", ""):
-            continue
+    for f in valid_files:
         if f.content_type not in ("image/jpeg", "image/png", "image/webp"):
             raise HTTPException(status_code=415, detail="지원하지 않는 이미지 형식입니다.")
         imgs.append(await f.read())
 
     if not imgs:
-        raise HTTPException(status_code=400, detail="이미지가 비었습니다.")
+        raise HTTPException(status_code=400, detail="이미지가 필요합니다.")
 
-    # LLM → 재료 추출
-    try:
-        detected = await extract_ingredients_from_images(imgs)
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    tokens = await _detect_tokens_from_bytes(imgs)
+    cards = await _search_recipes(tokens)
 
-    tokens = [x["name"] for x in detected if x.get("name")]
-
-    # DB 검색
     db = get_db()
-    cond = {"ingredients.norm": {"$in": tokens}} if tokens else {}
-    docs = await db["recipes"].find(cond).limit(24).to_list(length=24)
-
-    # 간단 스코어링
-    def score(d: Dict[str, Any]) -> int:
-        norm = set(d.get("ingredients", {}).get("norm", [])) if isinstance(d.get("ingredients"), dict) else set()
-        return sum(1 for t in tokens if t in norm)
-
-    docs.sort(key=score, reverse=True)
-    cards = [_to_card(d) for d in docs]
-
-    # 로그 남기기(옵션)
     await db["recommendations"].insert_one({
         "anon_id": anon_id,
-        "used": {"ingredients": detected},
+        "used": {"tokens": tokens},
         "result_ids": [c.id for c in cards],
         "created_at": __import__("datetime").datetime.utcnow(),
     })
