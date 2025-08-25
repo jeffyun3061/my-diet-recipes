@@ -18,8 +18,8 @@ export default function HomePage() {
 
   return (
     <Box sx={{ px: 2, py: 4 }}>
-      <Typography variant="h5" fontWeight={700} mb={4} textAlign="center">
-        대쉬보드
+      <Typography variant="h6" fontWeight={700} mb={2} textAlign="center">
+        건강한 식습관, 나만의 맞춤 레시피
       </Typography>
 
       <Card

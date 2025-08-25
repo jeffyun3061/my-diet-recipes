@@ -104,9 +104,9 @@ export default function RecipesPage() {
         <Typography variant="h6" fontWeight={700} gutterBottom>
           레시피 추천
         </Typography>
-        <Typography variant="body2" color="text.secondary">
+        {/* <Typography variant="body2" color="text.secondary">
           음식 사진을 업로드하면 AI가 맞춤 레시피를 추천해드려요
-        </Typography>
+        </Typography> */}
       </Box>
       {error && (
         <Alert severity="error" sx={{ mb: 2 }} onClose={() => setError("")}>

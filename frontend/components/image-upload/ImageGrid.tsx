@@ -26,10 +26,10 @@ export default function ImageGrid({ images, onRemoveImage }: Props) {
       >
         <ImageIcon sx={{ fontSize: 64, mb: 2, opacity: 0.5 }} />
         <Typography variant="h6" gutterBottom>
-          사진을 업로드해주세요
+          재료의 사진을 보여주세요
         </Typography>
         <Typography variant="body2" textAlign="center">
-          음식 사진을 올리면 맞춤 레시피를 추천해드려요
+          음식 사진을 올리면 AI로 맞춤 레시피를 추천해드려요
         </Typography>
       </Box>
     );

@@ -12,7 +12,7 @@ import ContactPageIcon from "@mui/icons-material/ContactPage";
 const NAV_ITEMS = [
   { label: "홈", path: "/", icon: <HomeIcon /> },
   { label: "레시피", path: "/recipes", icon: <InfoIcon /> },
-  { label: "개인정보", path: "/personal-info", icon: <ContactPageIcon /> },
+  { label: "내정보", path: "/personal-info", icon: <ContactPageIcon /> },
 ];
 
 export default function BottomNav() {
