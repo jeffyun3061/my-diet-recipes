@@ -7,6 +7,11 @@ body {
   height: 100%;
   margin: 0;
   padding: 0;
+  /* 전체 텍스트 선택 방지 */
+  -webkit-user-select: none; /* Safari */
+  -moz-user-select: none; /* Firefox */
+  -ms-user-select: none; /* IE10+/Edge */
+  user-select: none; /* Standard */
 }
 
 /* 모바일 캔버스만 유지 */
