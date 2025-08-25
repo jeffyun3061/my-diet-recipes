@@ -19,7 +19,7 @@ from app.services.vision_openai import (
 )
 
 
-router = APIRouter(prefix="/recipes", tags=["recipes"])
+router = APIRouter(prefix="/photo", tags=["photo"])
 
 
 # 텍스트(재료) 기반 추천 — 프론트 엔드포인트
