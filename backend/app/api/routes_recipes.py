@@ -12,6 +12,9 @@ from app.services.crawl10000.recommender import hybrid_recommend
 from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
 from app.services.crawl10000.etl import normalize_ingredients
 
+# --- ADD: 카드 스키마 (표시용 3~4 태그/요약/단계 컷)
+from app.models.schemas import RecipeCard
+
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
@@ -98,8 +101,6 @@ async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
         for c in cards
     ]
 
-
-
 @router.post("/recommend", response_model=List[RecipeRecommendationOut])
 async def recommend_from_images(
     req: Request,
@@ -172,3 +173,24 @@ async def recommend_from_files(
     })
 
     return [c.model_dump() for c in cards]
+
+# ADD: 카드 API (실서비스용) — "만개의레시피만" 저장된 컬렉션에서 카드 반환
+# 컬렉션명: recipe_cards  (id/recipe_id, title, subtitle, tags[3~4], variants[...], source{site,url,recipe_id})
+
+@router.get("/cards", response_model=List[RecipeCard])
+async def list_recipe_cards(limit: int = 30):
+    db = get_db()
+    cur = db["recipe_cards"].find(
+        {"source.site": "만개의레시피"},
+        {"_id": 0}
+    ).sort([("source.recipe_id", -1)]).limit(limit)
+    docs = await cur.to_list(length=limit)
+    return [RecipeCard(**d) for d in docs]
+
+@router.get("/cards/{card_id}", response_model=RecipeCard)
+async def get_recipe_card(card_id: str):
+    db = get_db()
+    doc = await db["recipe_cards"].find_one({"id": card_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="recipe not found")
+    return RecipeCard(**doc)
