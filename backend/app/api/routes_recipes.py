@@ -12,8 +12,9 @@ from app.services.crawl10000.recommender import hybrid_recommend
 from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
 from app.services.crawl10000.etl import normalize_ingredients
 
-# --- ADD: 카드 스키마 (표시용 3~4 태그/요약/단계 컷)
-from app.models.schemas import RecipeCard
+# ADD: 카드 스키마 (표시용 3~4 태그/요약/단계 컷)
+from app.models.schemas import RecipeCardStrict, to_strict_card
+
 
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
@@ -177,20 +178,46 @@ async def recommend_from_files(
 # ADD: 카드 API (실서비스용) — "만개의레시피만" 저장된 컬렉션에서 카드 반환
 # 컬렉션명: recipe_cards  (id/recipe_id, title, subtitle, tags[3~4], variants[...], source{site,url,recipe_id})
 
-@router.get("/cards", response_model=List[RecipeCard])
+@router.get("/cards", response_model=List[RecipeCardStrict])
 async def list_recipe_cards(limit: int = 30):
     db = get_db()
     cur = db["recipe_cards"].find(
-        {"source.site": "만개의레시피"},
-        {"_id": 0}
-    ).sort([("source.recipe_id", -1)]).limit(limit)
-    docs = await cur.to_list(length=limit)
-    return [RecipeCard(**d) for d in docs]
+        {"source.site": {"$in": ["만개의레시피", "unknown"]}},   # 만개 + 필요시 unknown
+        {
+            "_id": 0,
+            "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1,
+            "variants": 1,  # ← 통으로 읽고
+        }
+    ).sort([("source.recipe_id", -1), ("id", 1)]).limit(limit)
 
-@router.get("/cards/{card_id}", response_model=RecipeCard)
+    docs = await cur.to_list(length=limit)
+
+    # ← 여기서 첫 변형만 사용 (드라이버/서버별 $slice 이슈 회피)
+    for d in docs:
+        v = d.get("variants")
+        if isinstance(v, list):
+            d["variants"] = v[:1]
+
+    return [to_strict_card(d) for d in docs]
+
+
+@router.get("/cards/{card_id}", response_model=RecipeCardStrict)
 async def get_recipe_card(card_id: str):
     db = get_db()
-    doc = await db["recipe_cards"].find_one({"id": card_id}, {"_id": 0})
-    if not doc:
+    d = await db["recipe_cards"].find_one(
+        {"id": card_id},
+        {
+            "_id": 0,
+            "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1,
+            "variants": 1,  # ← 여기서도 $slice 제거
+            "source.site": 1, "source.recipe_id": 1,
+        }
+    )
+    if not d:
         raise HTTPException(status_code=404, detail="recipe not found")
-    return RecipeCard(**doc)
+
+    if isinstance(d.get("variants"), list):
+        d["variants"] = d["variants"][:1]
+
+    return to_strict_card(d)
+
