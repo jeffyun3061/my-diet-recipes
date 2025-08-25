@@ -101,7 +101,13 @@ export default function RecipesPage() {
       {" "}
       {/* 하단 액션바 공간 확보 */}
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h6" fontWeight={700} gutterBottom>
+        <Typography
+          variant="h6"
+          fontWeight={700}
+          mt={4}
+          mb={2}
+          textAlign="center"
+        >
           레시피 추천
         </Typography>
         {/* <Typography variant="body2" color="text.secondary">

@@ -32,7 +32,7 @@ export default function PersonalInfoPage() {
         <Card variant="outlined" sx={{ borderRadius: 2 }}>
           <CardContent>
             <Typography variant="h6" fontWeight={700}>
-              개인 정보
+              내 정보
             </Typography>
             <Typography variant="body2" color="text.secondary" mt={1}>
               건강 목표를 위해 기본 정보를 입력해 주세요.
