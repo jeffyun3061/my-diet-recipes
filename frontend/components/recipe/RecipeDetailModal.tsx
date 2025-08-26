@@ -41,6 +41,14 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
         setErr(null);
         return;
       }
+
+      // 카드 ID 유효성(ObjectId 24자) 가드: 유효하지 않으면 /full 호출을 막는다.
+      if (typeof recipe.id !== "string" || recipe.id.length !== 24) {
+        setFull(null);
+        setErr("상세를 열 수 있는 카드 ID가 없습니다.");
+        return;
+      }
+
       setLoading(true);
       setErr(null);
       try {

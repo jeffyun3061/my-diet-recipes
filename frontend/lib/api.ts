@@ -5,9 +5,23 @@ import type { UploadedImage, RecipeRecommendation } from "@/types/image";
 const API =
   process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
 
+// 헬퍼: 카드 id 선택 (응답이 cardId/card_id/card._id 등 다양할 수 있음)
+const _pickCardId = (r: any): string | null => {
+  const cand =
+    r?.cardId ??
+    r?.card_id ??
+    r?.card?._id ??
+    r?.card?.id ??
+    null;
+  if (cand && String(cand).length === 24) return String(cand);
+  // 리스트가 카드 문서라면 _id가 곧 카드 id일 수 있음 → 24자만 허용
+  if (r?._id && String(r._id).length === 24) return String(r._id);
+  return null;
+};
+
 // 긴 필드 정리 + steps/ingredients 3개 제한 (목록 프리뷰용)
 const normalizeRecipe = (r: any): RecipeRecommendation => ({
-  id: String(r?.id ?? r?._id ?? ""),
+  id: String(_pickCardId(r) ?? ""), // 모달에서 /full을 칠 카드 ID만 사용
   title: String(r?.title ?? ""),
   // summary 혹은 description 둘 중 있는 값 사용
   description: String(((r?.summary ?? r?.description ?? "") as string).replace(/\s+/g, " ")).slice(0, 90),

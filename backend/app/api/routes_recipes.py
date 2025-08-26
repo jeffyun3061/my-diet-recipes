@@ -6,6 +6,8 @@ from typing import List, Dict, Any, Optional
 import re
 from fastapi import APIRouter, UploadFile, File, Request, Response, HTTPException, Depends
 
+from bson import ObjectId
+
 from app.db.init import get_db
 from app.core.deps import get_or_set_anon_id
 from app.db.models.schemas import RecipeRecommendationOut
@@ -47,17 +49,13 @@ def _compact3(lines: list[str]) -> list[str]:
     # 카드 미리보기용: 노이즈 제거 후 최대 3줄
     return _drop_noise_lines([str(x) for x in (lines or [])])[:3]
 
-# 제목에 들어가면 컷할 키워드(요리 아님: 보관/언박싱/후기/세척 등)
+# 제목 컷 키워드(요리 아님: 보관/언박싱/후기/세척 등)
 EX_TITLE_RE = re.compile("(보관|보관법|저장|세척|언박싱|후기|구매가이드)")
 
-# 재료 칩에도 쇼핑/가격 노이즈 제거 (프리뷰/모달 공통)
+# 재료 칩 노이즈 제거
 ING_NOISE_RE = re.compile(r"(원\b|구매|쿠폰|특가|스폰|광고|배송|장바구니|마켓|스마트스토어|리뷰)", re.I)
 
 def _clean_ingredients(chips: list[str], max_len: Optional[int] = None) -> list[str]:
-    
-    # 재료 문자열에서 상표/라벨/쇼핑 단어/가격류 제거, 중복 제거.
-    # max_len 지정 시 상한 적용(프리뷰는 6, 모달은 제한 없음).
-    
     out, seen = [], set()
     for s in chips or []:
         t = re.sub(r"^\s*[\[\(].*?[\]\)]\s*", "", str(s).strip())  # [올팜] 같은 라벨 제거
@@ -70,6 +68,15 @@ def _clean_ingredients(chips: list[str], max_len: Optional[int] = None) -> list[
         if max_len is not None and len(out) >= max_len:
             break
     return out
+
+def _ensure_id_from__id(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    recipe_cards 컬렉션의 _id(ObjectId)를 문자열로 변환해 'id' 필드에 주입.
+    기존 문서에 id가 있더라도, 모달 상세 조회 일관성을 위해 _id 우선으로 덮어쓴다.
+    """
+    if "_id" in doc:
+        doc["id"] = str(doc["_id"])
+    return doc
 
 # ------------------------------
 # 원본 → 카드 변환 헬퍼
@@ -104,13 +111,13 @@ def _to_card(doc: Dict[str, Any]) -> RecipeRecommendationOut:
                 break
 
     return RecipeRecommendationOut(
-        id=str(doc.get("_id") or ""),
+        id=str(doc.get("_id") or doc.get("id") or ""),
         title=title,
         description=desc,
         ingredients=ing_list,
         steps=steps,
         imageUrl=image,
-        tags=[str(t) for t in tags] if tags else [],
+        tags=[str(t) for t in (tags or [])],
     )
 
 # ‘원본 recipes’ 문서의 steps 안전 추출
@@ -166,10 +173,9 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> List[str]:
     return tokens
 
 # 업로드 추천: 카드 룰과 동일하게 후처리
-
 async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
     db = get_db()
-    user_diet = ""  # TODO: "lowcarb" 등 내부 태그 문자열로 매핑해 넣으면 가점(+0.05)
+    user_diet = ""  # TODO: "lowcarb" 등 내부 태그 문자열 매핑 시 가점(+0.05)
     cards = await hybrid_recommend(db["recipes"], tokens, user_diet=user_diet, top_k=24)
 
     out: List[RecipeRecommendationOut] = []
@@ -183,9 +189,7 @@ async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
 
         # ingredients/tags: 공백 정리 + 개수 제한(ingredients는 6개까지)
         ingredients = _clean_ingredients([str(x) for x in (c.get("ingredients") or [])], max_len=6)
-        tags = [
-            s for s in (str(t).strip() for t in (c.get("tags") or [])) if s
-        ][:6]
+        tags = [s for s in (str(t).strip() for t in (c.get("tags") or [])) if s][:6]
 
         out.append(
             RecipeRecommendationOut(
@@ -270,8 +274,9 @@ async def recommend_from_files(
 
     return [c.model_dump() for c in cards]
 
+# --------------------------------
 # Cards 전용 서브라우터
-
+# --------------------------------
 cards = APIRouter(prefix="/cards", tags=["recipes"])
 
 def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
@@ -285,7 +290,7 @@ def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
     desc = (v.summary or c.subtitle or "") if v else (c.subtitle or "")
     desc = re.sub(r"\s+", " ", desc).strip()
 
-    # 재료 칩도 노이즈 제거(프리뷰는 6개 상한)  ← ★ 여기서 한 번 더 방어
+    # 재료 칩도 노이즈 제거(프리뷰는 6개 상한)
     ingredients = _clean_ingredients((v.key_ingredients or []) if v else [], max_len=6)
 
     return RecipeRecommendationOut(
@@ -302,7 +307,6 @@ def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
 @cards.get("/flat", response_model=List[RecipeRecommendationOut])
 async def list_cards_flat(limit: int = 30):
     db = get_db()
-    # 요리 아님 컷 + 최소 1줄 스텝 보장
     query = {
         "is_recipe": True,
         "source.site": {"$in": ["만개의레시피", "unknown"]},
@@ -312,25 +316,40 @@ async def list_cards_flat(limit: int = 30):
             {"variants.0.steps.0": {"$exists": True}},  # 백필/스키마 차이 대비
         ],
     }
-    proj = {"_id": 0, "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
+    proj = {"id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}  # _id는 find가 기본 포함
 
-    cur = db["recipe_cards"].find(query, proj).sort([("source.recipe_id", -1), ("id", 1)]).limit(limit)
+    cur = db["recipe_cards"].find(query, proj).sort([("source.recipe_id", -1), ("_id", 1)]).limit(limit)
     docs = await cur.to_list(length=limit)
+
+    # 중요: _id → id 강제 세팅
     for d in docs:
+        _ensure_id_from__id(d)
         if isinstance(d.get("variants"), list):
             d["variants"] = d["variants"][:1]
+
     strict_cards = [to_strict_card(d) for d in docs]
+    # to_strict_card가 도중에 id를 덮어써도, 우리가 위에서 id를 이미 _id 문자열로 세팅했으니 일관됨
     return [_strict_to_flat(c).model_dump() for c in strict_cards]
 
 @cards.get("/{card_id}/flat", response_model=RecipeRecommendationOut)
 async def get_card_flat(card_id: str):
     db = get_db()
+
+    # ObjectId 시도 → 실패 시 문자열 id 필드로도 검색(하위호환)
+    q = None
+    try:
+        q = {"_id": ObjectId(card_id)}
+    except Exception:
+        q = {"id": card_id}
+
     d = await db["recipe_cards"].find_one(
-        {"id": card_id},
-        {"_id": 0, "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
+        q,
+        {"id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
     )
     if not d:
         raise HTTPException(status_code=404, detail="recipe not found")
+
+    _ensure_id_from__id(d)
     if isinstance(d.get("variants"), list):
         d["variants"] = d["variants"][:1]
     return _strict_to_flat(to_strict_card(d)).model_dump()
@@ -338,28 +357,42 @@ async def get_card_flat(card_id: str):
 # 상세 모달용 ‘풀 조리과정’ (고정 경로, 반드시 /{card_id} 위!)
 @cards.get("/{card_id}/full")
 async def get_card_full(card_id: str):
-    # 상세 모달 전용:
-    # - steps_full: 광고/가격/쇼핑 라인 제거된 '완전한' 조리과정 (길이 제한 없음)
-    # - ingredients_full: 원문 재료 리스트(있으면) — 노이즈 제거(상한 없음)
+    """
+    상세 모달 전용:
+    - steps_full: 광고/가격/쇼핑 라인 제거된 '완전한' 조리과정 (길이 제한 없음)
+    - ingredients_full: 원문 재료 리스트(있으면) — 노이즈 제거(상한 없음)
+    우선순위:
+      1) 원본 recipes에서 안전 추출 후 정제
+      2) recipe_cards 문서에 백필되어 있는 steps_full/ingredients_full로 폴백
+    """
     db = get_db()
-    card = await db["recipe_cards"].find_one(
-        {"id": card_id},
-        {"_id": 0, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "source": 1}
-    )
+
+    # 1) 카드 찾기 (_id 우선, 하위호환으로 id 필드도 허용)
+    card = None
+    try:
+        card = await db["recipe_cards"].find_one(
+            {"_id": ObjectId(card_id)},
+            {"_id": 1, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "source": 1,
+             "steps_full": 1, "ingredients_full": 1}
+        )
+    except Exception:
+        card = await db["recipe_cards"].find_one(
+            {"id": card_id},
+            {"_id": 1, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "source": 1,
+             "steps_full": 1, "ingredients_full": 1}
+        )
+
     if not card:
         raise HTTPException(status_code=404, detail="card not found")
 
-    # 원본 recipe 찾기
-    r = await _find_source_recipe(card, db)
-
+    # 2) 원본 recipe 찾기 → 최우선 추출
     steps_full: list[str] = []
     ingredients_full: list[str] = []
 
+    r = await _find_source_recipe(card, db)
     if r:
-        # steps
         steps_full = _drop_noise_lines(_steps_from_any(r))
 
-        # ingredients — 다양한 스키마에서 안전 추출
         def _list_from(d, keys: list[str] = []) -> list[str]:
             if isinstance(d, dict):
                 for k in keys:
@@ -393,12 +426,18 @@ async def get_card_full(card_id: str):
                     ing = _list_from(v, [])
                     if ing:
                         break
-        # 모달은 상한 없이 깨끗하게
+
         ingredients_full = _clean_ingredients([s for s in (ing or []) if str(s).strip()], max_len=None)
 
+    # 3) 폴백: recipe_cards 자체의 백필 필드 사용
+    if not steps_full:
+        steps_full = _drop_noise_lines([str(x) for x in (card.get("steps_full") or []) if str(x).strip()])
+    if not ingredients_full:
+        ingredients_full = _clean_ingredients([str(x) for x in (card.get("ingredients_full") or []) if str(x).strip()], max_len=None)
+
     return {
-        "id": card["id"],
-        "title": card["title"],
+        "id": str(card.get("_id") or card.get("id")),
+        "title": card.get("title") or "",
         "imageUrl": card.get("imageUrl"),
         "tags": card.get("tags") or [],
         "ingredients_full": ingredients_full,
@@ -419,11 +458,13 @@ async def list_cards(limit: int = 30):
             {"variants.0.steps.0": {"$exists": True}},
         ],
     }
-    proj = {"_id": 0, "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
+    proj = {"id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
 
-    cur = db["recipe_cards"].find(query, proj).sort([("source.recipe_id", -1), ("id", 1)]).limit(limit)
+    cur = db["recipe_cards"].find(query, proj).sort([("source.recipe_id", -1), ("_id", 1)]).limit(limit)
     docs = await cur.to_list(length=limit)
+
     for d in docs:
+        _ensure_id_from__id(d)  # _id → id 주입 (중요)
         if isinstance(d.get("variants"), list):
             d["variants"] = d["variants"][:1]
     return [to_strict_card(d) for d in docs]
@@ -431,12 +472,24 @@ async def list_cards(limit: int = 30):
 @cards.get("/{card_id}", response_model=RecipeCardStrict)
 async def get_card(card_id: str):
     db = get_db()
-    d = await db["recipe_cards"].find_one(
-        {"id": card_id},
-        {"_id": 0, "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
-    )
+    # _id 우선
+    d = None
+    try:
+        d = await db["recipe_cards"].find_one(
+            {"_id": ObjectId(card_id)},
+            {"id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
+        )
+    except Exception:
+        pass
+    if not d:
+        d = await db["recipe_cards"].find_one(
+            {"id": card_id},
+            {"id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
+        )
     if not d:
         raise HTTPException(status_code=404, detail="recipe not found")
+
+    _ensure_id_from__id(d)
     if isinstance(d.get("variants"), list):
         d["variants"] = d["variants"][:1]
     return to_strict_card(d)
