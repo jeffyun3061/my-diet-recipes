@@ -224,7 +224,14 @@ export default function BackgroundVideoWithControls() {
               fontFamily: `${gamjaFlower.style.fontFamily} !important`,
             }}
           >
-            나의 다이어트 레시피
+            나의{" "}
+            <Box component="span" sx={{ color: "lightgreen" }}>
+              다
+            </Box>
+            이어트 레
+            <Box component="span" sx={{ color: "lightgreen" }}>
+              시피
+            </Box>
           </Typography>
           <br />
           <br />
