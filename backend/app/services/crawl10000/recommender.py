@@ -1,69 +1,115 @@
-# 목적: 하이브리드 추천
-#  교집합 기반 Jaccard(주 점수)
-#  임베딩 존재 보너스(+0.15): 임베딩 유무만 반영(간단)
-#  식단 태그 가점(+0.05): 예) prefs에서 "lowcarb"로 매핑되면 해당 태그 포함시 보너스
-# 확장:
-#  - 임베딩 코사인 유사도 반영(벡터DB/Atlas Vector)
-#  - 피드백(좋아요/저장)에 따른 가중치 조정
+# app/services/crawl10000/recommender.py
+from __future__ import annotations
+from typing import List, Dict, Any
+import re
+import motor.motor_asyncio
 
-from typing import Dict, Iterable, List, Tuple
-from motor.motor_asyncio import AsyncIOMotorCollection
+# --- 내부 헬퍼 ---------------------------------------------------------------
 
-def _jaccard(a: Iterable[str], b: Iterable[str]) -> float:
-    sa, sb = set(a), set(b)
-    if not sa or not sb:
-        return 0.0
-    inter = len(sa & sb)
-    union = len(sa | sb)
-    return inter / union if union else 0.0
+def _compile_terms(words: List[str]) -> List[re.Pattern]:
+    # 비어있는/공백 토큰 제거 후 안전 이스케이프
+    terms = [w.strip() for w in (words or []) if w and w.strip()]
+    return [re.compile(re.escape(t), re.I) for t in terms]
+
+def _match_count(text: str, pats: List[re.Pattern]) -> int:
+    if not text:
+        return 0
+    return sum(1 for p in pats if p.search(text))
+
+def _arr_to_text(arr: Any) -> str:
+    if isinstance(arr, list):
+        return " ".join(str(x) for x in arr if x)
+    return str(arr or "")
+
+# --- 하이브리드 추천 --------------------------------------------------------
 
 async def hybrid_recommend(
-    recipes: AsyncIOMotorCollection,
-    detected_slugs: List[str],
-    user_diet: str = "",
-    top_k: int = 12,
-) -> List[Dict]:
-    
-    # detected_slugs: 비전/LLM에서 감지된 재료 slug 배열
-    # user_diet: "lowcarb" 등 내부 태그 문자열(없어도 됨)
-  
-    # 1차 후보: 정규화 재료 교집합
-    cond = {"ingredients.norm": {"$in": list(set(detected_slugs) or ["__none__"])}} if detected_slugs else {}
-    candidates = await recipes.find(cond).limit(1000).to_list(length=1000)
+    db: motor.motor_asyncio.AsyncIOMotorDatabase,
+    ingredients: List[str],
+    limit: int = 30
+) -> List[Dict[str, Any]]:
+    """
+    입력 토큰(정규화된 재료명)이 실제 문서(제목/태그/재료)에 등장하는지로 1차 필터·랭킹.
+    - 감자 같은 하드코딩/폴백 없음
+    - regex 매칭 기반 가중 점수로 정렬
+    - 결과 부족 시 '품질 보강'으로만 채움(중복 방지)
+    """
+    col = db["recipe_cards"]
 
-    scored: List[Tuple[float, Dict]] = []
-    for rec in candidates:
-        ing = rec.get("ingredients", {}).get("norm") or []
-        j = _jaccard(detected_slugs, ing)
+    # 0) 토큰 준비
+    tokens = [t for t in (ingredients or []) if t]
+    if not tokens:
+        return []
+    pats = _compile_terms(tokens)
 
-        # 임베딩 존재 여부 보너스(간단)
-        has_emb = isinstance(rec.get("embedding"), list) and len(rec["embedding"]) > 10
-        emb_score = 0.15 if has_emb else 0.0
+    # 1) 1차 후보: 토큰이 하나라도 매칭되는 문서
+    #    배열 필드는 $elemMatch + $regex, 스칼라는 $regex
+    rx_union = re.compile("|".join(re.escape(t) for t in tokens), re.I)
+    q = {
+        "$or": [
+            {"ingredients_full":  {"$elemMatch": {"$regex": rx_union}}},
+            {"ingredients_clean": {"$elemMatch": {"$regex": rx_union}}},
+            {"ingredients":       {"$elemMatch": {"$regex": rx_union}}},
+            {"tags":              {"$elemMatch": {"$regex": rx_union}}},
+            {"chips":             {"$elemMatch": {"$regex": rx_union}}},
+            {"title":             {"$regex": rx_union}},
+        ]
+    }
+    proj = {
+        "_id": 1,
+        "title": 1, "summary": 1, "imageUrl": 1,
+        "tags": 1, "chips": 1,
+        "ingredients": 1, "ingredients_full": 1, "ingredients_clean": 1,
+        "steps": 1, "steps_full": 1,
+    }
+    docs = await col.find(q, proj).limit(400).to_list(length=400)
 
-        # 식단 태그 보너스
-        diet_bonus = 0.0
-        if user_diet:
-            tags = [t.lower() for t in (rec.get("tags") or [])]
-            if user_diet.lower() in tags:
-                diet_bonus = 0.05
+    # 2) 스코어링: 제목 > 태그/칩 > 재료들 > 요약
+    #    토큰이 들어가면 1점씩 가산(필드별 가중치 적용)
+    def score(d: Dict[str, Any]) -> float:
+        title = d.get("title") or ""
+        tags  = _arr_to_text(d.get("tags"))
+        chips = _arr_to_text(d.get("chips"))
+        ings  = " ".join([
+            _arr_to_text(d.get("ingredients_full")),
+            _arr_to_text(d.get("ingredients_clean")),
+            _arr_to_text(d.get("ingredients")),
+        ])
+        summ  = d.get("summary") or ""
 
-        score = (0.80 * j) + emb_score + diet_bonus
-        if score > 0:
-            scored.append((score, rec))
+        s  = 3.0 * _match_count(title, pats)
+        s += 2.0 * _match_count(f"{tags} {chips}", pats)
+        s += 1.2 * _match_count(ings, pats)
+        s += 0.5 * _match_count(summ, pats)
 
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top = [r for _, r in scored[:top_k]]
+        # 데이터 품질 보정(풀 텍스트가 있으면 소폭 가점)
+        if d.get("steps_full") or d.get("ingredients_full"):
+            s += 0.2
+        return s
 
-    # 프론트 카드 스키마에 맞춰 축약(이미지/요약/재료/단계)
-    out: List[Dict] = []
-    for r in top:
-        out.append({
-            "id": str(r["_id"]),
-            "title": r.get("title") or "",
-            "description": r.get("summary") or "",
-            "ingredients": r.get("ingredients", {}).get("raw") or [],
-            "steps": r.get("steps") or [],
-            "imageUrl": r.get("image") or "",
-            "tags": r.get("tags") or [],
-        })
-    return out
+    ranked = sorted(docs, key=score, reverse=True)
+
+    # 3) 결과 부족 시 품질 보강(매칭 없는 문서로 채우되 앞 순위는 그대로 유지)
+    out: List[Dict[str, Any]] = ranked[:limit]
+    if len(out) < limit:
+        need = limit - len(out)
+        seen_ids = {str(x["_id"]) for x in out}
+        # 품질 조건: 이미지/요약/풀스텝 중 일부라도 있는 카드 우선
+        fill_q = {
+            "$or": [
+                {"imageUrl": {"$ne": None}},
+                {"summary": {"$ne": ""}},
+                {"steps_full.0": {"$exists": True}},
+            ]
+        }
+        rest = await col.find(fill_q, proj).limit(limit * 2).to_list(length=limit * 2)
+        for r in rest:
+            rid = str(r["_id"])
+            if rid in seen_ids:
+                continue
+            out.append(r)
+            seen_ids.add(rid)
+            if len(out) >= limit:
+                break
+
+    return out[:limit]

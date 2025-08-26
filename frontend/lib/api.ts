@@ -1,7 +1,10 @@
 // lib/api.ts
 import type { UploadedImage, RecipeRecommendation } from "@/types/image";
 
-// 백엔드 베이스 URL (.env.local 에 NEXT_PUBLIC_API_BASE=http://localhost:8000)
+/** --------------------------
+ *  백엔드 베이스 URL
+ *  (.env.local → NEXT_PUBLIC_API_BASE=http://localhost:8000)
+ * -------------------------- */
 const API = process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
 
 /* --------------------------
@@ -22,6 +25,7 @@ const _uniq = (arr: string[]) => Array.from(new Set(arr));
 const _isObjId = (v: unknown) =>
   typeof v === "string" && /^[a-f0-9]{24}$/i.test(v);
 
+/** recipe_cards._id 우선 추출 (팀원 케이스 포함) */
 const _pickCardId = (r: any): string | null => {
   if (_isObjId(r?.id)) return String(r.id); // 우리 백엔드: id = recipe_cards._id
   const cand =
@@ -34,9 +38,43 @@ const _pickCardId = (r: any): string | null => {
   return _isObjId(cand) ? String(cand) : null;
 };
 
-// 팀원 타입에 맞게 프리뷰 정규화
+/** variant 선택 (단일 variant 또는 variants[0]) */
+const pickVariant = (r: any) =>
+  r?.variant ?? (Array.isArray(r?.variants) ? r.variants[0] : null);
+
+/** --------------------------
+ *  팀원 타입에 맞춘 프리뷰 정규화
+ *  - 카드 리스트 전용(ingredients/steps 3개 프리뷰)
+ *  - 상세 모달은 /full API로 전체 사용
+ * -------------------------- */
 const normalizeRecipe = (r: any): RecipeRecommendation => {
-  // 다양한 키(tags/hashtags/chips/labels/… )에서 모아서 고유화
+  const v = pickVariant(r);
+
+  const description = String(
+    (
+      (r?.summary ??
+        r?.description ??
+        r?.subtitle ??
+        v?.summary ??
+        "") as string
+    ).replace(/\s+/g, " ")
+  ).slice(0, 90);
+
+  const ingredients = Array.isArray(r?.ingredients)
+    ? r.ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
+    : Array.isArray(v?.key_ingredients)
+    ? v.key_ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
+    : [];
+
+  const steps = Array.isArray(r?.steps)
+    ? r.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+    : Array.isArray(v?.steps)
+    ? v.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+    : Array.isArray(v?.steps_compact)
+    ? v.steps_compact.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+    : [];
+
+  // 태그: 여러 키(tags/hashtags/chips/labels/categories 등)에서 모아 고유화
   const rawTags = _uniq([
     ..._toArr(r?.tags),
     ..._toArr(r?.hashTags),
@@ -46,18 +84,17 @@ const normalizeRecipe = (r: any): RecipeRecommendation => {
     ..._toArr(r?.tagList),
     ..._toArr(r?.categories),
     ..._toArr(r?.category),
+    // variant 쪽에 태그류가 있을 수도 있으니 흡수
+    ..._toArr(v?.tags),
+    ..._toArr(v?.labels),
   ]);
 
   return {
     id: String(_pickCardId(r) ?? ""),
     title: String(r?.title ?? ""),
-    description: String(((r?.summary ?? r?.description ?? "") as string).replace(/\s+/g, " ")).slice(0, 90),
-    ingredients: Array.isArray(r?.ingredients)
-      ? r.ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
-      : [],
-    steps: Array.isArray(r?.steps)
-      ? r.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
-      : [],
+    description,
+    ingredients,
+    steps,
     imageUrl: String(r?.imageUrl ?? r?.image ?? ""),
     tags: rawTags,
   };
@@ -141,9 +178,11 @@ export const postPreferences = async (p: PreferencesIn) => {
 };
 
 /* --------------------------
-   카드 목록(flat) – 옵션
+   카드 목록(flat)
 -------------------------- */
-export async function fetchCardsFlat(limit = 30): Promise<RecipeRecommendation[]> {
+export async function fetchCardsFlat(
+  limit = 30
+): Promise<RecipeRecommendation[]> {
   const res = await fetch(`${API}/recipes/cards/flat?limit=${limit}`, {
     cache: "no-store",
     credentials: "include",
@@ -178,7 +217,7 @@ export async function fetchCardFull(id: string): Promise<RecipeFull> {
   let res: Response;
   try {
     // 상세는 쿠키 불필요 → 프리플라이트/자격증명 요구 방지
-    res = await fetch(url, { cache: "no-store" }); // credentials 제거
+    res = await fetch(url, { cache: "no-store" });
   } catch (e: any) {
     throw new Error(`상세 요청 실패(Fetch): ${e?.message || e}`);
   }

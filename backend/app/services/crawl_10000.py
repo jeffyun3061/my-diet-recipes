@@ -54,13 +54,13 @@ DIET_PLUS  = ["샐러드","구이","찜","오븐","저염","저지방","에어�
 DIET_MINUS = ["튀김","버터","크림","마요네즈","설탕","달달","기름진","치즈듬뿍","느끼한","헤비"]
 
 def _diet_adjust(title: str, desc: str) -> float:
-    text = f"{title} {desc}"
+    text = f"{title} {desc}".lower()
     score = 0.0
     for w in DIET_PLUS:
-        if w in text:
+        if w.lower() in text:
             score += 0.3
     for w in DIET_MINUS:
-        if w in text:
+        if w.lower() in text:
             score -= 0.4
     return score
 
@@ -70,8 +70,8 @@ def _score_item(item: Dict, ingredients: List[str], tags: List[str]) -> float:
     desc = (item.get("desc") or "").lower()
     ko_in = 0
     for ing in ingredients:
-        s = ing.lower()
-        if s in title or s in desc:
+        s = (ing or "").lower()
+        if s and (s in title or s in desc):
             ko_in += 1
     tag_bonus = 0.5 if any(t in ["다이어트","저염","저지방"] for t in tags) else 0.0
     diet_adj = _diet_adjust(title, desc)
@@ -144,20 +144,8 @@ def _parse_list(html: str) -> List[Dict]:
     return uniq
 
 async def crawl_10000_by_ingredients(ingredients: List[str], tags: List[str], limit: int = 12) -> List[Dict]:
-
     # 10000recipe에서 재료/태그로 레시피를 크롤링한다.
-    # ingredients: 재료 리스트 (예: ["돼지고기", "감자", "계란"])
-    # 재료/태그로 검색해서 레시피 목록을 반환한다.
-    # 반환 스키마:
-    # {
-    #   "title": str,
-    #   "url": str,
-    #   "desc": str|None,
-    #   "thumbnail": str|None,
-    #   "timeMin": int|None,
-    #   "source": {"type":"external","site":"10000recipe"},
-    #   "score": float
-    # }
+    # 반환 스키마: 각 item에 score 포함
     query = _build_query(ingredients, tags)
     if not query:
         return []
@@ -169,7 +157,6 @@ async def crawl_10000_by_ingredients(ingredients: List[str], tags: List[str], li
         return []
 
     # HTTP 요청
-    html = ""
     async with httpx.AsyncClient(timeout=15.0, headers={"User-Agent": USER_AGENT}) as client:
         # 속도 제한: 서버 예의상 약간의 sleep
         await asyncio.sleep(0.8)

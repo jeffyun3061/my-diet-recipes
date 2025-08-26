@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import logging
 from typing import List, Dict, Any
 
 from fastapi import UploadFile
@@ -17,6 +18,8 @@ except Exception:
     OpenAI = None  # type: ignore
 
 from app.core.config import settings
+
+log = logging.getLogger(__name__)
 
 
 class VisionNotReady(Exception):
@@ -69,9 +72,7 @@ PROMPT = (
 
 
 async def extract_ingredients_from_files(files: List[UploadFile]) -> List[str]:
-    
     # 업로드 파일(List[UploadFile]) → 바이트 읽기 → Vision → 이름 리스트(중복 제거/정렬)
-    
     images: List[bytes] = []
     for f in files:
         if not f:
@@ -79,22 +80,31 @@ async def extract_ingredients_from_files(files: List[UploadFile]) -> List[str]:
         data = await f.read()
         if data:
             images.append(data)
+
     if not images:
+        log.info("Vision skipped (no images)")
         return []
+
     items = await extract_ingredients_from_images(images)
+
     names = [(i.get("name") or "").strip() for i in items if isinstance(i, dict)]
     names = [n for n in names if n]
+
+    # 폴백 금지: 비어있으면 빈 리스트 그대로 반환
+    if not names:
+        log.info("Vision returned no ingredients (n_images=%d)", len(images))
+        return []
+
     # 이름 원본 그대로(정규화는 라우터에서 수행)
     uniq = sorted(set(names))
     return uniq
 
 
 async def extract_ingredients_from_images(images: List[bytes]) -> List[Dict[str, Any]]:
-    
     # 이미지 바이트 배열 → [{'name': str, 'amount': str?, 'confidence': float?}, ...]
     # Responses API(신) + json_schema 사용 시도
     # 미지원/오류면 Chat Completions로 폴백
-    
+
     client = _client()
 
     # 1) Responses API 시도
@@ -102,10 +112,12 @@ async def extract_ingredients_from_images(images: List[bytes]) -> List[Dict[str,
         # content 파트 구성: input_text + input_image
         parts: List[Dict[str, Any]] = [{"type": "input_text", "text": PROMPT}]
         for b in images:
-            parts.append({
-                "type": "input_image",
-                "image_data": {"data": _b64(b), "mime_type": "image/jpeg"},
-            })
+            parts.append(
+                {
+                    "type": "input_image",
+                    "image_data": {"data": _b64(b), "mime_type": "image/jpeg"},
+                }
+            )
 
         kwargs: Dict[str, Any] = dict(
             model="gpt-4o-mini",
@@ -128,37 +140,61 @@ async def extract_ingredients_from_images(images: List[bytes]) -> List[Dict[str,
             rsp = client.responses.create(**kwargs)
 
         text = _extract_text_safe(rsp)
-        obj = json.loads(text or "{}")
+        if not text:
+            log.warning("Responses API returned empty text")
+            return []
+
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            log.warning("Responses API returned non-JSON content trimmed; ignoring")
+            return []
+
         items = obj.get("ingredients", [])
         return [it for it in items if isinstance(it, dict)]
-    except Exception:
-        # 2) Chat Completions로 폴백
-        try:
-            content = [{"type": "text", "text": PROMPT}]
-            for b in images:
-                content.append({
+
+    except Exception as e:
+        log.exception("Responses API path failed: %s", e)
+
+    # 2) Chat Completions로 폴백
+    try:
+        content = [{"type": "text", "text": PROMPT}]
+        for b in images:
+            content.append(
+                {
                     "type": "image_url",
                     "image_url": {"url": f"data:image/jpeg;base64,{_b64(b)}"},
-                })
-            chat = client.chat.completions.create(
-                model="gpt-4o-mini",
-                temperature=0.1,
-                messages=[{"role": "user", "content": content}],
-                # chat.completions는 json_schema 미지원 → 강한 지시어로 대체
-                response_format={"type": "json_object"},  # 가능하면 JSON만 받도록
+                }
             )
-            text = chat.choices[0].message.content if chat and chat.choices else ""
-            obj = json.loads(text or "{}")
-            items = obj.get("ingredients", [])
-            return [it for it in items if isinstance(it, dict)]
-        except Exception:
+        chat = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.1,
+            messages=[{"role": "user", "content": content}],
+            # chat.completions는 json_schema 미지원 → 강한 지시어로 대체
+            response_format={"type": "json_object"},
+        )
+
+        text = chat.choices[0].message.content if chat and chat.choices else ""
+        if not text:
+            log.warning("Chat Completions returned empty text")
             return []
+
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            log.warning("Chat Completions returned non-JSON content trimmed; ignoring")
+            return []
+
+        items = obj.get("ingredients", [])
+        return [it for it in items if isinstance(it, dict)]
+
+    except Exception as e:
+        log.exception("Chat Completions fallback failed: %s", e)
+        return []
 
 
 def _extract_text_safe(rsp: Any) -> str | None:
-    
     # OpenAI Responses SDK의 리턴 구조가 버전에 따라 달라서 가능한 경로를 순서대로 시도.
-
     # 1) 직렬화된 필드
     try:
         return rsp.output[0].content[0].text  # type: ignore[attr-defined]
