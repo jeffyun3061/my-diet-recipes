@@ -55,12 +55,6 @@ export default function BackgroundVideoWithControls() {
       // 너비가 230 미만이면 영상 멈춤 + 사진 보여주기
       videoRef.current.pause();
       setPlaying(false);
-    } else {
-      // 다시 조건 만족하면 영상 재생
-      videoRef.current
-        .play()
-        .then(() => setPlaying(true))
-        .catch(() => {});
     }
   }, [leftAreaWidth]);
 
