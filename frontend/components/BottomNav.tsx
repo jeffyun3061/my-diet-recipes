@@ -6,13 +6,21 @@ import type { Route } from "next";
 import { usePathname, useRouter } from "next/navigation";
 import { BottomNavigation, BottomNavigationAction, Box } from "@mui/material";
 import HomeIcon from "@mui/icons-material/Home";
+import FoodBankIcon from "@mui/icons-material/FoodBank";
+import MenuBookIcon from "@mui/icons-material/MenuBook";
 import InfoIcon from "@mui/icons-material/Info";
 import ContactPageIcon from "@mui/icons-material/ContactPage";
+import Face2Icon from "@mui/icons-material/Face2";
+import FaceRetouchingNaturalIcon from "@mui/icons-material/FaceRetouchingNatural";
 
 const NAV_ITEMS = [
-  { label: "홈", path: "/", icon: <HomeIcon /> },
-  { label: "레시피", path: "/recipes", icon: <InfoIcon /> },
-  { label: "내정보", path: "/personal-info", icon: <ContactPageIcon /> },
+  { label: "홈", path: "/", icon: <FoodBankIcon /> },
+  { label: "레시피", path: "/recipes", icon: <MenuBookIcon /> },
+  {
+    label: "내정보",
+    path: "/personal-info",
+    icon: <FaceRetouchingNaturalIcon />,
+  },
 ];
 
 export default function BottomNav() {
