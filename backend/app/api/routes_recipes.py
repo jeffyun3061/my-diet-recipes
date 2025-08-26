@@ -13,7 +13,8 @@ from app.core.deps import get_or_set_anon_id
 from app.db.models.schemas import RecipeRecommendationOut
 from app.services.crawl10000.recommender import hybrid_recommend
 from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
-from app.services.crawl10000.etl import normalize_ingredients
+from app.services.crawl10000.seed_ing import normalize_ingredients_ko
+
 
 # 카드 스키마 (표시용 3~4 태그/요약/단계 컷)
 from app.models.schemas import RecipeCardStrict, to_strict_card
@@ -173,7 +174,7 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> tuple[List[str], List[
 
     raw_names = [x.get("name", "") for x in items if isinstance(x, dict)]
     raw_names = [n for n in raw_names if n]
-    tokens = normalize_ingredients(raw_names)
+    tokens = normalize_ingredients_ko(raw)
     return tokens, raw_names
 
 async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:

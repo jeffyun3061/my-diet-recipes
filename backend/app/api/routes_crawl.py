@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from app.db.init import get_db
 
 from app.services.crawl10000.crawler import crawl_query
-from app.services.crawl10000.etl import ensure_indexes, upsert_recipe
+from backend.app.services.crawl10000.seed_ing import ensure_indexes, upsert_recipe
 from app.services.crawl10000.embeddings import upsert_vector_for_recipe
 
 router = APIRouter(prefix="/crawl", tags=["crawl"])
