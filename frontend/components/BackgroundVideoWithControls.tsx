@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, IconButton } from "@mui/material";
+import { Box, IconButton, Typography } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import PauseIcon from "@mui/icons-material/Pause";
 import VolumeOffIcon from "@mui/icons-material/VolumeOff";
@@ -17,6 +17,22 @@ export default function BackgroundVideoWithControls() {
   const BG_PLACEHOLDER = "/images/bg-placeholder.jpg";
   const VIDEO_SRC = "/videos/bg-saja.mp4";
 
+  const MOBILE_WIDTH = 420;
+  const [windowWidth, setWindowWidth] = useState(0);
+
+  useEffect(() => {
+    // 컴포넌트가 마운트된 후에 window 객체에 접근
+    setWindowWidth(window.innerWidth);
+
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener("resize", handleResize);
+
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // 왼쪽 여백 공간의 너비 계산
+  const leftAreaWidth = (windowWidth - MOBILE_WIDTH) / 2;
+
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -28,7 +44,6 @@ export default function BackgroundVideoWithControls() {
       videoRef.current.pause();
       setPlaying(false);
     } else {
-      // 사용자가 클릭했으므로 autoplay 제한 해제됨
       videoRef.current.muted = muted;
       videoRef.current
         .play()
@@ -72,10 +87,10 @@ export default function BackgroundVideoWithControls() {
           height: "100vh",
           zIndex: 0,
           overflow: "hidden",
-          bgcolor: "#f0f0f0", // 폴백 배경색
+          bgcolor: "#f0f0f0",
         }}
       >
-        {/* 비디오: 항상 DOM 안에 유지 */}
+        {/* 비디오 */}
         <video
           ref={videoRef}
           src={VIDEO_SRC}
@@ -93,7 +108,7 @@ export default function BackgroundVideoWithControls() {
           }}
         />
 
-        {/* 이미지: 비디오 안 보일 때만 표시 */}
+        {/* 이미지 */}
         <Box
           component="img"
           src={BG_PLACEHOLDER}
@@ -109,11 +124,96 @@ export default function BackgroundVideoWithControls() {
         />
       </Box>
 
+      {/* 왼쪽 텍스트 */}
+      {/* <Box
+        sx={{
+          // 배경 이미지가 보일 때만 flex로 표시, 아닐 때는 none
+          display: !playing || hasError ? "flex" : "none",
+          // flex 아이템(텍스트)을 수평/수직 중앙 정렬
+          alignItems: "center",
+          justifyContent: "center",
+          position: "fixed",
+          top: "10%",
+          left: 0,
+          // 계산된 왼쪽 영역의 너비를 적용 (음수 방지)
+          width: leftAreaWidth > 0 ? leftAreaWidth : 0,
+          transform: "translateY(-50%)",
+          color: "#fff",
+          zIndex: 1000,
+          // 텍스트 자체에 대한 스타일 (필요시 수정)
+          bgcolor: "rgba(255,255,255,0.3)",
+          padding: 2,
+          borderRadius: 2,
+        }}
+      >
+        <Typography variant="h6" component="div" sx={{ fontWeight: 700 }}>
+          MY DIET RECIPES
+        </Typography>
+        <Typography variant="h6" component="div" sx={{ fontWeight: 700 }}>
+          나의 다이어트 레시피
+        </Typography>
+        <Typography variant="h6" component="div" sx={{ fontWeight: 700 }}>
+          모두가 알 ✨다시피
+        </Typography>
+      </Box> */}
+      <Box
+        sx={{
+          // 1. 바깥쪽 Box: 위치와 정렬을 담당하는 컨테이너
+          display: !playing || hasError ? "flex" : "none", // 보일 때 flex로 설정
+          alignItems: "center", // 자식(안쪽 Box)을 수직 중앙 정렬
+          justifyContent: "center", // 자식(안쪽 Box)을 수평 중앙 정렬
+          position: "fixed",
+          top: "40%",
+          left: 0,
+          width: leftAreaWidth > 0 ? leftAreaWidth : 0, // 왼쪽 영역 전체 너비 차지
+          transform: "translateY(-50%)",
+          zIndex: 1000,
+        }}
+      >
+        {/* 2. 안쪽 Box: 실제 스타일(배경, 패딩 등)을 담당 */}
+        <Box
+          sx={{
+            bgcolor: "rgba(255,255,255,0.3)",
+            paddingX: 3, // 좌우 패딩
+            paddingY: 1.5, // 상하 패딩
+            borderRadius: 2,
+            color: "#fff",
+            textAlign: "center",
+          }}
+        >
+          <Typography variant="h3" component="div" sx={{ fontWeight: 700 }}>
+            MY DIET RECIPES
+          </Typography>
+          <Typography variant="h4" component="div" sx={{ fontWeight: 700 }}>
+            나의 다이어트 레시피
+          </Typography>
+          <br />
+          <br />
+          <Typography
+            variant="h5"
+            component="div"
+            sx={{ fontWeight: 700, textAlign: "left" }}
+          >
+            모두가 알 다시피
+          </Typography>
+          <br />
+          <br />
+          <Typography
+            variant="h3"
+            component="div"
+            sx={{ fontWeight: 700, whiteSpace: "nowrap", marginRight: 5 }}
+          >
+            ✨다시피
+          </Typography>
+          <br />
+        </Box>
+      </Box>
+
       {/* 컨트롤 버튼 */}
       <Box
         sx={{
           position: "fixed",
-          left: 46,
+          right: 40,
           bottom: 16,
           display: "flex",
           gap: 1,

@@ -36,8 +36,8 @@ export default function BottomNav() {
       sx={{
         position: "absolute", // sticky에서 absolute로 변경
         bottom: 0,
-        left: 0,
-        right: 0,
+        left: 5,
+        right: 5,
         borderTop: 1,
         borderColor: "divider",
         bgcolor: "background.paper",
