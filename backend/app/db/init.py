@@ -14,7 +14,7 @@ async def init_db() -> AsyncIOMotorDatabase:
     if _db is not None:
         return _db
 
-    uri = os.getenv("MONGODB_URI", "mongodb://mydiet-mongo:27017")
+    uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
     name = os.getenv("MONGODB_DB", "mydiet")
 
     _client = AsyncIOMotorClient(uri)

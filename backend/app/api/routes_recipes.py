@@ -1,5 +1,5 @@
 # app/api/routes_recipes.py
-# 사진 업로드 → LLM으로 재료 추출 → 재료 정규화 → DB 검색 → 카드 배열 반환
+# 레시피 추천/검색 — 지용 담당
 
 from __future__ import annotations
 from typing import List, Dict, Any
@@ -16,6 +16,7 @@ router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
 def _to_card(doc: Dict[str, Any]) -> RecipeRecommendationOut:
+    """DB 문서를 프론트 카드 스키마로 변환"""
     title = doc.get("title") or ""
     desc = doc.get("summary") or doc.get("description") or ""
     image = None
@@ -26,7 +27,7 @@ def _to_card(doc: Dict[str, Any]) -> RecipeRecommendationOut:
 
     ing_list: List[str] = []
     if isinstance(doc.get("ingredients"), dict):
-        for k in ["original", "lines", "list"]:
+        for k in ["original", "lines", "list", "raw"]:
             v = doc["ingredients"].get(k)
             if isinstance(v, list):
                 ing_list = [str(x) for x in v if x]
@@ -55,13 +56,12 @@ def _to_card(doc: Dict[str, Any]) -> RecipeRecommendationOut:
 
 
 async def _detect_tokens_from_bytes(imgs: List[bytes]) -> List[str]:
-    # Vision으로 재료 추출
+    """Vision으로 재료 추출"""
     try:
         items = await extract_ingredients_from_images(imgs)
     except VisionNotReady as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        # 기타 네트워크/모델 에러
         raise HTTPException(status_code=503, detail=f"vision error: {e}")
 
     # 이름만 추출 → 정규화
@@ -71,20 +71,16 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> List[str]:
 
 
 async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
-
-    # 기존 단순 find/sort 대신 하이브리드 추천으로 교체.
-    # tokens: 비전/LLM에서 추출한 slug 리스트
-
+    """하이브리드 추천으로 레시피 검색"""
     db = get_db()
 
-    # (필요 시) 사용자 식단 라벨을 프리미엄 가점으로 반영하고 싶다면 여기서 꺼내서 넣으면 됨.
-    # ex) prefs = await db["preferences"].find_one({"anon_id": ...})
+    # 사용자 식단 라벨을 프리미엄 가점으로 반영
     user_diet = ""  # TODO: "lowcarb" 등 내부 태그 문자열로 매핑해 넣으면 가점(+0.05)
 
     # 하이브리드 추천 호출 → 프론트 카드 스키마에 맞춘 dict 리스트 반환
     cards = await hybrid_recommend(db["recipes"], tokens, user_diet=user_diet, top_k=24)
 
-    # Pydantic 모델로 변환하여 반환 (기존 response_model 유지)
+    # Pydantic 모델로 변환하여 반환
     return [
         RecipeRecommendationOut(
             id=c.get("id", ""),
@@ -97,7 +93,6 @@ async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
         )
         for c in cards
     ]
-
 
 
 @router.post("/recommend", response_model=List[RecipeRecommendationOut])
@@ -115,6 +110,7 @@ async def recommend_from_images(
     image_7: UploadFile | None = File(None),
     image_8: UploadFile | None = File(None),
 ):
+    """이미지 업로드 기반 레시피 추천 (단일 필드들)"""
     # Swagger에서 빈 문자열("")을 보내면 422가 떠서, 프론트는 반드시 "없는 필드는 아예 보내지 않기"
     files = [f for f in [image_0, image_1, image_2, image_3, image_4, image_5, image_6, image_7, image_8] if f]
 
@@ -149,6 +145,7 @@ async def recommend_from_files(
     anon_id: str = Depends(get_or_set_anon_id),
     files: List[UploadFile] = File(..., description="이미지 파일들 (여러 장 가능)"),
 ):
+    """이미지 업로드 기반 레시피 추천 (배열 1개)"""
     # 진짜 파일만 필터
     valid_files = [f for f in files if f and f.filename]
     imgs: List[bytes] = []
@@ -172,3 +169,48 @@ async def recommend_from_files(
     })
 
     return [c.model_dump() for c in cards]
+
+
+@router.get("/search")
+async def search_recipes(
+    q: str = None,
+    tags: List[str] = None,
+    limit: int = 20,
+    skip: int = 0,
+    anon_id: str = Depends(get_or_set_anon_id)
+):
+    """텍스트 기반 레시피 검색"""
+    db = get_db()
+    
+    # 검색 조건 구성
+    query = {}
+    
+    if q:
+        query["$text"] = {"$search": q}
+    
+    if tags:
+        query["tags"] = {"$in": tags}
+    
+    try:
+        # 검색 실행
+        cursor = db["recipes"].find(query).skip(skip).limit(limit)
+        
+        if q:
+            cursor = cursor.sort([("score", {"$meta": "textScore"})])
+        else:
+            cursor = cursor.sort("created_at", -1)
+        
+        recipes = await cursor.to_list(length=limit)
+        
+        # 카드 형태로 변환
+        cards = [_to_card(recipe) for recipe in recipes]
+        
+        return {
+            "recipes": [c.model_dump() for c in cards],
+            "total": len(cards),
+            "limit": limit,
+            "skip": skip
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"검색 오류: {str(e)}")

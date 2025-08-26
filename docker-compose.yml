@@ -9,10 +9,16 @@ services:
       - MONGODB_DB=mydiet
       - MONGO_URI=${MONGO_URI}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # 호스트(.env)의 GOOGLE_APPLICATION_CREDENTIALS는 호스트 경로이므로
+      # 컨테이너 내부 경로로 재설정합니다.
+      - GOOGLE_APPLICATION_CREDENTIALS=/secrets/${GOOGLE_APPLICATION_CREDENTIALS}
     ports:
       - "8000:8000"
     depends_on:
       - mongo
+    volumes:
+      # 키 파일을 컨테이너에 읽기 전용으로 마운트
+      - ./${GOOGLE_APPLICATION_CREDENTIALS}:/secrets/${GOOGLE_APPLICATION_CREDENTIALS}:ro
 
   mongo:
     image: mongo:6

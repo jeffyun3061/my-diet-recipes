@@ -5,6 +5,7 @@
 from __future__ import annotations
 from typing import List, Optional
 from pydantic import BaseModel, Field, ConfigDict
+from datetime import datetime
 
 # # 프론트 카드 타입 (배열로 반환)
 class RecipeRecommendationOut(BaseModel):
@@ -20,6 +21,14 @@ class RecipeRecommendationOut(BaseModel):
 # # 텍스트(재료) 기반 추천 입력
 class RecipeRecommendIn(BaseModel):
     ingredients: List[str] = Field(default_factory=list)
+
+# # 사진 업로드용 스키마
+class PhotoDoc(BaseModel):
+    anon_id: str
+    filename: str
+    content_type: str
+    data: bytes
+    created_at: datetime = Field(default_factory=datetime.utcnow)
 
 # # 개인정보/목표 입력 — 프론트 폼 대응 (optional로 두어 폼 확장 여지)
 class PreferencesIn(BaseModel):

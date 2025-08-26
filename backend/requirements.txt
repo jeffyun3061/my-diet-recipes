@@ -8,3 +8,5 @@ numpy
 beautifulsoup4
 pydantic-settings
 openai>=1.0.0
+google-cloud-vision>=3.0.0
+google-cloud-aiplatform>=1.35.0

@@ -1,120 +1,176 @@
 # app/api/routes_prefs.py
-# 사용자 개인정보 입력 저장/조회 — 가람 담당
+# 사용자 선호/개인정보 관리 — 가람 담당
 
-from fastapi import APIRouter, Depends, Response, HTTPException, Request
-from datetime import datetime, timezone
+from __future__ import annotations
+from typing import Dict, Any, Optional
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 
 from app.core.deps import get_or_set_anon_id
 from app.db.init import get_db
 from app.db.models.schemas import PreferencesIn
-from app.services.reco import calc_target_kcal
 
-# prefix
 router = APIRouter(prefix="/preferences", tags=["preferences"])
 
-# 한글 > 코드 정규화 테이블
-_DIET_MAP = {
-    "균형식": "balanced",
-    "저탄고지": "lowcarb",
-    "키토": "keto",
-    "고단백": "highprotein",
-    "간헐적 단식": "intermittent",
-}
-_SEX_MAP = {
-    "남성": "male",
-    "여성": "female",
-}
+class PreferencesResponse(BaseModel):
+    ok: bool
+    anonId: str
+    prefs: Optional[Dict[str, Any]] = None
+    kcal_target: Optional[int] = None
+    diet_goal: Optional[str] = None
+    saved: Optional[Dict[str, Any]] = None
+    mode: Optional[str] = None
 
-@router.post("")
-async def upsert_prefs(
-    payload: PreferencesIn,                      # camelCase 수용 + alias(스키마 설정 기준)
-    response: Response,
-    anon_id: str = Depends(get_or_set_anon_id),  # 쿠키 없으면 발급
-):
-    # DB 핸들 방어
-    try:
-        db = get_db()
-    except RuntimeError as e:
-        # 500 대신 503으로 명확히
-        raise HTTPException(status_code=503, detail=str(e))
+def calc_target_kcal(weight_kg: float, target_weight_kg: float, days: int, activity: float = 1.35) -> int:
+    """칼로리 타겟 계산"""
+    maint = 22 * weight_kg * activity
+    deficit = ((weight_kg - target_weight_kg) * 7700) / max(days, 1)
+    deficit = max(300, min(deficit, 1000))  # 안전 범위
+    return int(max(900, maint - deficit))
 
-    # 입력 정규화 (라벨/코드 혼용 대응)
-    sex = (payload.sex or "").strip()
-    sex = _SEX_MAP.get(sex, sex) or None  # "남성"→"male", 이미 코드면 유지
-
-    diet_input = (payload.diet or "").strip()
-    diet_code = _DIET_MAP.get(diet_input, diet_input) or None  # "저탄고지" > "lowcarb"
-
-    # camelCase로 왔지만 스키마 alias가 없을 수도 있으므로 보수적으로 병행 수용
-    calorie_target = getattr(payload, "calorie_target", None)
-    if calorie_target is None:
-        calorie_target = getattr(payload, "calorieTarget", None)
-
-    # 서버 계산 — camelCase 필드 접근 (폼 그대로 수용)
-    w = payload.weightKg or 0
-    t = payload.targetWeightKg or w
-    d = payload.periodDays or 0
-
-    try:
-        kcal_target = calc_target_kcal(w, t, d)
-    except Exception:
-        kcal_target = None  # 계산 실패시 None
-
-    if t < w:
-        goal = "loss"
-    elif t > w:
-        goal = "gain"
+def determine_diet_goal(weight_kg: float, target_weight_kg: float) -> str:
+    """다이어트 목표 결정"""
+    if target_weight_kg < weight_kg:
+        return "loss"
+    elif target_weight_kg > weight_kg:
+        return "gain"
     else:
-        goal = "maintain"
+        return "maintain"
 
-    now = datetime.now(timezone.utc).isoformat()
-
-    # DB 저장은 snake_case로 표준화 (조회/분석 편리)
-    doc = {
-        "anon_id": anon_id,
-        "weight_kg": payload.weightKg,
-        "target_weight_kg": payload.targetWeightKg,
-        "period_days": payload.periodDays,
-        "diet": diet_code,                        #한글 라벨도 코드로 저장
-        "diet_tags": payload.dietTags,
-        "max_cook_minutes": payload.maxCookMinutes,
-        "allergies": payload.allergies,
-        "age": payload.age,
-        "height_cm": payload.heightCm,
-        "sex": sex,                               #"남성/여성"도 코드로 저장
-        "activity_level": payload.activityLevel,
-        "calorie_target": calorie_target,         #alias/camel 혼용 대응
-        "kcal_target": kcal_target,
-        "diet_goal": goal,
-        "updated_at": now,
+def normalize_diet_label(diet: str) -> str:
+    """다이어트 라벨 정규화"""
+    diet_map = {
+        "저탄고지": "lowcarb",
+        "케토": "keto",
+        "고단백": "highprotein",
+        "간헐적단식": "intermittent",
+        "균형": "balanced",
+        "lowcarb": "lowcarb",
+        "keto": "keto",
+        "highprotein": "highprotein",
+        "intermittent": "intermittent",
+        "balanced": "balanced"
     }
+    return diet_map.get(diet, "balanced")
 
-    prev = await db["user_preferences"].find_one({"anon_id": anon_id})
-    if not prev:
-        doc["created_at"] = now
-
-    await db["user_preferences"].update_one(
-        {"anon_id": anon_id},
-        {"$set": doc},
-        upsert=True
-    )
-
-    return {
-        "ok": True,
-        "anonId": anon_id,
-        "kcal_target": kcal_target,
-        "diet_goal": goal,
-        "saved": doc,
-        "mode": "upserted" if prev else "inserted",
+def normalize_sex_label(sex: str) -> str:
+    """성별 라벨 정규화"""
+    sex_map = {
+        "남성": "male",
+        "여성": "female",
+        "male": "male",
+        "female": "female"
     }
+    return sex_map.get(sex, "male")
 
-@router.get("")
-async def get_prefs(request: Request, anon_id: str = Depends(get_or_set_anon_id)):
-    # DB 핸들 방어
+@router.get("", response_model=PreferencesResponse)
+async def get_preferences(anon_id: str = Depends(get_or_set_anon_id)):
+    """사용자 선호/개인정보 조회"""
+    db = get_db()
+    
     try:
-        db = get_db()
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        prefs = await db["user_preferences"].find_one({"anon_id": anon_id})
+        
+        if not prefs:
+            return PreferencesResponse(
+                ok=True,
+                anonId=anon_id,
+                prefs={}
+            )
+        
+        # ObjectId를 문자열로 변환
+        prefs["_id"] = str(prefs["_id"])
+        
+        return PreferencesResponse(
+            ok=True,
+            anonId=anon_id,
+            prefs=prefs
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB 조회 오류: {str(e)}")
 
-    doc = await db["user_preferences"].find_one({"anon_id": anon_id}, {"_id": 0})
-    return {"ok": True, "anonId": anon_id, "prefs": (doc or {})}
+@router.post("", response_model=PreferencesResponse)
+async def save_preferences(
+    payload: PreferencesIn,
+    anon_id: str = Depends(get_or_set_anon_id)
+):
+    """사용자 선호/개인정보 저장 (Upsert)"""
+    db = get_db()
+    
+    try:
+        # 입력 데이터 정규화
+        prefs_data = {
+            "anon_id": anon_id,
+            "updated_at": datetime.utcnow()
+        }
+        
+        # 기본 필드들
+        if payload.weightKg is not None:
+            prefs_data["weight_kg"] = payload.weightKg
+        if payload.targetWeightKg is not None:
+            prefs_data["target_weight_kg"] = payload.targetWeightKg
+        if payload.periodDays is not None:
+            prefs_data["period_days"] = payload.periodDays
+        if payload.maxCookMinutes is not None:
+            prefs_data["max_cook_minutes"] = payload.maxCookMinutes
+        if payload.age is not None:
+            prefs_data["age"] = payload.age
+        if payload.heightCm is not None:
+            prefs_data["height_cm"] = payload.heightCm
+            
+        # 라벨 정규화
+        if payload.diet:
+            prefs_data["diet"] = normalize_diet_label(payload.diet)
+        if payload.sex:
+            prefs_data["sex"] = normalize_sex_label(payload.sex)
+        if payload.activityLevel:
+            prefs_data["activity_level"] = payload.activityLevel
+            
+        # 배열 필드들
+        if payload.dietTags:
+            prefs_data["diet_tags"] = payload.dietTags
+        if payload.allergies:
+            prefs_data["allergies"] = payload.allergies
+            
+        # 칼로리 타겟
+        if payload.calorie_target is not None:
+            prefs_data["calorie_target"] = payload.calorie_target
+            
+        # 자동 계산 필드들
+        if payload.weightKg and payload.targetWeightKg and payload.periodDays:
+            kcal_target = calc_target_kcal(
+                payload.weightKg, 
+                payload.targetWeightKg, 
+                payload.periodDays
+            )
+            prefs_data["kcal_target"] = kcal_target
+            prefs_data["diet_goal"] = determine_diet_goal(payload.weightKg, payload.targetWeightKg)
+        
+        # Upsert 실행
+        result = await db["user_preferences"].update_one(
+            {"anon_id": anon_id},
+            {
+                "$set": prefs_data,
+                "$setOnInsert": {"created_at": datetime.utcnow()}
+            },
+            upsert=True
+        )
+        
+        # 저장된 데이터 조회
+        saved_prefs = await db["user_preferences"].find_one({"anon_id": anon_id})
+        saved_prefs["_id"] = str(saved_prefs["_id"])
+        
+        return PreferencesResponse(
+            ok=True,
+            anonId=anon_id,
+            kcal_target=saved_prefs.get("kcal_target"),
+            diet_goal=saved_prefs.get("diet_goal"),
+            saved=saved_prefs,
+            mode="inserted" if result.upserted_id else "upserted"
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"DB 저장 오류: {str(e)}")
