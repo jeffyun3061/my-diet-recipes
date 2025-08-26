@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import re
 import logging
-from fastapi import APIRouter, UploadFile, File, Request, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, Request, HTTPException, Depends
 from bson import ObjectId
 
 from app.db.init import get_db
@@ -178,10 +178,20 @@ async def _collect_uploads(request: Request) -> List[bytes]:
         form = None
 
     if form:
-        for k, v in form.multi_items():
-            if isinstance(v, UploadFile):
-                if v.content_type in ("image/jpeg", "image/jpg", "image/png", "image/webp"):
-                    imgs.append(await v.read())
+        for _, v in form.multi_items():
+            if not v:
+                continue
+            ct = getattr(v, "content_type", None)
+            if not ct:
+                continue
+            ct = ct.lower()
+            if ct in ("image/jpeg", "image/jpg", "image/png", "image/webp"):
+                try:
+                    data = await v.read()
+                except Exception:
+                    continue
+                if data:
+                    imgs.append(data)
     return imgs
 
 async def _detect_tokens_from_bytes(imgs: List[bytes]) -> tuple[List[str], List[str]]:
@@ -197,10 +207,9 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> tuple[List[str], List[
     tokens = normalize_ingredients_ko(raw_names)
     return tokens, raw_names
 
-async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
-    db = get_db()
-    user_diet = ""  # TODO: "lowcarb" 등 내부 태그 문자열 매핑 시 가점
-    cards = await hybrid_recommend(db["recipes"], tokens, user_diet=user_diet, top_k=30)
+async def _search_recipes(db, tokens: List[str]) -> List[RecipeRecommendationOut]:
+    # NOTE: recommender.hybrid_recommend(db, ingredients, limit=30) 시그니처에 맞춤
+    cards = await hybrid_recommend(db, tokens, limit=30)
 
     out: List[RecipeRecommendationOut] = []
     for c in cards:
@@ -262,7 +271,7 @@ async def _recommend_from_imgs(img_bytes: list[bytes], db) -> list[RecipeRecomme
         )
 
     try:
-        return await _search_recipes(tokens)
+        return await _search_recipes(db, tokens)
     except Exception as e:
         log.exception("hybrid_recommend failed")
         raise HTTPException(status_code=500, detail=f"recommend_error: {e}")
@@ -283,37 +292,21 @@ async def _read_uploadfiles(uploads: list[UploadFile]) -> list[bytes]:
 # 엔드포인트: 추천
 # ------------------------------
 
-@router.post("/recommend")
+@router.post("/recommend", response_model=List[RecipeRecommendationOut])
 async def recommend(
-    image_0: UploadFile | None = File(None),
-    image_1: UploadFile | None = File(None),
-    image_2: UploadFile | None = File(None),
-    image_3: UploadFile | None = File(None),
-    image_4: UploadFile | None = File(None),
-    image_5: UploadFile | None = File(None),
-    image_6: UploadFile | None = File(None),
-    image_7: UploadFile | None = File(None),
-    image_8: UploadFile | None = File(None),
-    files: list[UploadFile] | None = File(None),
+    request: Request,
     db=Depends(get_db),
     anon_id: str = Depends(get_or_set_anon_id),
 ):
     """
-    프런트가 보내는 모든 케이스 수신:
-      - image_0..image_8 (최대 9개, 개별 필드)
-      - files[] (다중 업로드 배열)
+    프런트가 보내는 모든 형태의 업로드 요청을 수신하여 처리합니다.
+    - image_0..image_8 필드
+    - files / files[] 배열
+    - 기타 form-data 속 UploadFile 항목들
     """
-    uploads: list[UploadFile] = []
-    for img in [image_0, image_1, image_2, image_3, image_4, image_5, image_6, image_7, image_8]:
-        if img:
-            uploads.append(img)
-    if files:
-        uploads.extend(files)
-
-    if not uploads:
+    img_bytes = await _collect_uploads(request)
+    if not img_bytes:
         raise HTTPException(status_code=400, detail="이미지 파일이 없습니다.")
-
-    img_bytes = await _read_uploadfiles(uploads)
     items = await _recommend_from_imgs(img_bytes, db)
     return [_to_dict(it) for it in items]
 
@@ -327,8 +320,10 @@ async def recommend_files(
     일부 클라이언트가 필드명을 고정하지 않고 멀티파트로만 보낼 때 대응:
     request.form()에서 UploadFile들을 긁어와 처리.
     """
-    form_imgs: list[bytes] = await _collect_uploads(request)
-    items = await _recommend_from_imgs(form_imgs, db)
+    img_bytes = await _collect_uploads(request)
+    if not img_bytes:
+        raise HTTPException(status_code=400, detail="이미지 파일이 없습니다.")
+    items = await _recommend_from_imgs(img_bytes, db)
     return [_to_dict(it) for it in items]
 
 # ------------------------------
@@ -375,7 +370,6 @@ async def list_cards_flat(limit: int = 30):
             {"variants.0.steps.0": {"$exists": True}},  # 백필/스키마 차이 대비
         ],
     }
-    # 프리뷰 소스 필드들을 넉넉히 포함 (핵심: subtitle, variants)
     proj = {
         "id": 1,
         "title": 1,
@@ -408,7 +402,6 @@ async def list_cards_flat(limit: int = 30):
 @cards.get("/{card_id}/flat", response_model=RecipeRecommendationOut)
 async def get_card_flat(card_id: str):
     db = get_db()
-
     # ObjectId 시도 → 실패 시 문자열 id 필드로도 검색(하위호환)
     try:
         q = {"_id": ObjectId(card_id)}
