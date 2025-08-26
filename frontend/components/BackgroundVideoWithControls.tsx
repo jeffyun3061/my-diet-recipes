@@ -66,7 +66,8 @@ export default function BackgroundVideoWithControls() {
       videoRef.current.pause();
       setPlaying(false);
     } else {
-      videoRef.current.muted = muted;
+      setMuted(false);
+      videoRef.current.muted = false;
       videoRef.current
         .play()
         .then(() => setPlaying(true))
