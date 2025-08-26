@@ -16,6 +16,7 @@ import {
 import CloseIcon from "@mui/icons-material/Close";
 import type { RecipeRecommendation } from "@/types/image";
 import { fetchCardFull } from "@/lib/api";
+import type { RecipeFull } from "@/lib/api";
 
 interface Props {
   recipe: RecipeRecommendation | null;
@@ -24,51 +25,56 @@ interface Props {
 }
 
 export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
-    // 추가: 풀 조리과정/재료 로딩 상태
-  const [full, setFull] = useState<null | {
-    ingredients_full: string[];
-    steps_full: string[];
-  }>(null);
+  // /full 결과만 사용
+  const [full, setFull] = useState<RecipeFull | null>(null);
   const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  // 추가: 모달 열렸고 id 있으면 상세 호출
+  // 모달 열릴 때마다 /full 호출 (프리뷰는 모달에서 사용 안 함)
   useEffect(() => {
     let alive = true;
+    const ac = new AbortController();
+
     async function load() {
       if (!open || !recipe?.id) {
         setFull(null);
+        setErr(null);
         return;
       }
       setLoading(true);
+      setErr(null);
       try {
-        const f = await fetchCardFull(recipe.id);
-        if (alive) {
-          setFull({
-            ingredients_full: f.ingredients_full || [],
-            steps_full: f.steps_full || [],
-          });
-        }
-      } catch {
-        if (alive) setFull(null);
+        const data = await fetchCardFull(recipe.id);
+        if (!alive) return;
+        setFull(data);
+      } catch (e: any) {
+        if (!alive) return;
+        setErr(e?.message || "상세 불러오기 실패");
       } finally {
         if (alive) setLoading(false);
       }
     }
+
     load();
     return () => {
       alive = false;
+      ac.abort();
     };
   }, [open, recipe?.id]);
 
   if (!recipe) return null;
-  
-   // 표시 우선순위: full 있으면 full → 없으면 썸네일 3줄
-  const stepsToRender =
-    full?.steps_full?.length ? full.steps_full : recipe.steps || [];
-  const ingredientsToRender =
-    full?.ingredients_full?.length
-      ? full.ingredients_full
-      : recipe.ingredients || [];
+
+  // 제목/이미지/태그는 풀 응답 우선, 없으면 목록 값 사용
+  const title = full?.title ?? recipe.title ?? "";
+  const imageUrl =
+    (full?.imageUrl && String(full.imageUrl)) ||
+    recipe.imageUrl ||
+    "/images/recipe-placeholder.jpg";
+  const tags = (full?.tags?.length ? full.tags : recipe.tags) || [];
+
+  // 핵심: 모달에서는 풀데이터만 사용 (프리뷰 3줄로 대체하지 않음)
+  const ingredients = full?.ingredients_full || [];
+  const steps = full?.steps_full || [];
 
   return (
     <Dialog
@@ -76,9 +82,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
       onClose={onClose}
       maxWidth="sm"
       fullWidth
-      PaperProps={{
-        sx: { borderRadius: 3, maxHeight: "90vh" },
-      }}
+      PaperProps={{ sx: { borderRadius: 3, maxHeight: "90vh" } }}
     >
       <DialogContent sx={{ p: 0 }}>
         {/* 헤더 */}
@@ -92,6 +96,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
               bgcolor: "background.paper",
               boxShadow: 2,
             }}
+            aria-label="close"
           >
             <CloseIcon />
           </IconButton>
@@ -100,111 +105,119 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
         {/* 이미지 */}
         <CardMedia
           component="img"
-          image={recipe.imageUrl || "/images/recipe-placeholder.jpg"}
-          alt={recipe.title}
-          sx={{
-            height: 250,
-            objectFit: "cover",
-            mx: 2,
-            borderRadius: 2,
-          }}
+          image={imageUrl}
+          alt={title}
+          sx={{ height: 250, objectFit: "cover", mx: 2, borderRadius: 2 }}
         />
 
-        {/* 로딩바 (full 로딩 중일 때만) */}
+        {/* 로딩바 */}
         {loading && (
           <Box sx={{ px: 3, pt: 1 }}>
             <LinearProgress />
           </Box>
         )}
 
-        {/* 내용 */}
         <Box sx={{ p: 3 }}>
           <Typography variant="h5" fontWeight={700} gutterBottom>
-            {recipe.title}
+            {title}
           </Typography>
 
-          <Typography variant="body1" color="text.secondary" mb={3}>
-            {recipe.description}
-          </Typography>
+          {/* (설명은 /full 스키마에 없으니 목록의 description만 보조로) */}
+          {recipe.description ? (
+            <Typography variant="body1" color="text.secondary" mb={3}>
+              {recipe.description}
+            </Typography>
+          ) : null}
 
-          {/* 태그들 */}
-          {recipe.tags && (
+          {/* 태그 */}
+          {!!tags.length && (
             <Box mb={3}>
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-                {recipe.tags.map((tag, index) => (
+                {tags.map((tag, i) => (
                   <Chip
-                    key={index}
+                    key={`${tag}-${i}`}
                     label={tag}
                     size="small"
-                    sx={{
-                      bgcolor: "primary.light",
-                      color: "primary.contrastText",
-                    }}
+                    sx={{ bgcolor: "primary.light", color: "primary.contrastText" }}
                   />
                 ))}
               </Stack>
             </Box>
           )}
 
-          {/* 재료 */}
+          {/* 에러 메시지 */}
+          {err && (
+            <Typography variant="body2" color="error" sx={{ mb: 2 }}>
+              {err}
+            </Typography>
+          )}
+
+          {/* 재료: 풀데이터만 표시. 로딩 중/없음 처리 분리 */}
           <Typography variant="h6" fontWeight={600} gutterBottom>
-            재료{full?.ingredients_full?.length ? " (전체)" : ""}
+            재료{ingredients.length ? " (전체)" : ""}
           </Typography>
           <Box mb={3}>
-            {ingredientsToRender.map((ingredient, index) => (
-              <Chip
-                key={index}
-                label={ingredient}
-                size="small"
-                variant="outlined"
-                sx={{ mr: 1, mb: 1 }}
-              />
-            ))}
-            {!ingredientsToRender.length && 
+            {loading ? (
+              <Typography variant="body2" color="text.secondary">
+                재료 불러오는 중…
+              </Typography>
+            ) : ingredients.length ? (
+              ingredients.map((ingredient, index) => (
+                <Chip
+                  key={`${ingredient}-${index}`}
+                  label={ingredient}
+                  size="small"
+                  variant="outlined"
+                  sx={{ mr: 1, mb: 1 }}
+                />
+              ))
+            ) : (
               <Typography variant="body2" color="text.secondary">
                 제공된 재료 정보가 없습니다.
-              </Typography>  
-            } 
+              </Typography>
+            )}
           </Box>
 
-          {/* 조리 과정 */}
-<Typography variant="h6" fontWeight={600} gutterBottom>
-  조리 과정{full?.steps_full?.length ? " (전체)" : ""}
-</Typography>
-
-<Stack spacing={2} sx={{ maxHeight: 320, overflow: "auto", pr: 1 }}>
-  {stepsToRender.length === 0 ? (
-    <Typography variant="body2" color="text.secondary">
-      조리 과정 정보가 없습니다.
-    </Typography>
-  ) : (
-    stepsToRender.map((step, index) => (
-      <Box key={index} sx={{ display: "flex", gap: 2 }}>
-        <Box
-          sx={{
-            minWidth: 28,
-            height: 28,
-            borderRadius: "50%",
-            bgcolor: "primary.main",
-            color: "white",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: "0.875rem",
-            fontWeight: 600,
-            mt: 0.25,
-          }}
-        >
-          {index + 1}
-        </Box>
-        <Typography variant="body2" sx={{ flex: 1, pt: 0.5 }}>
-          {step}
-        </Typography>
-      </Box>
-    ))
-  )}
-</Stack>
-
+          {/* 조리 과정: 풀데이터만 표시. 프리뷰 3줄로 대체하지 않음 */}
+          <Typography variant="h6" fontWeight={600} gutterBottom>
+            조리 과정{steps.length ? " (전체)" : ""}
+          </Typography>
+          <Stack spacing={2} sx={{ maxHeight: 320, overflow: "auto", pr: 1 }}>
+            {loading ? (
+              <Typography variant="body2" color="text.secondary">
+                조리 과정 불러오는 중…
+              </Typography>
+            ) : steps.length ? (
+              steps.map((step, index) => (
+                <Box key={`${index}-${step.slice(0, 12)}`} sx={{ display: "flex", gap: 2 }}>
+                  <Box
+                    sx={{
+                      minWidth: 28,
+                      height: 28,
+                      borderRadius: "50%",
+                      bgcolor: "primary.main",
+                      color: "white",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: "0.875rem",
+                      fontWeight: 600,
+                      mt: 0.25,
+                    }}
+                  >
+                    {index + 1}
+                  </Box>
+                  <Typography variant="body2" sx={{ flex: 1, pt: 0.5 }}>
+                    {step}
+                  </Typography>
+                </Box>
+              ))
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                조리 과정 정보가 없습니다.
+              </Typography>
+            )}
+          </Stack>
         </Box>
       </DialogContent>
     </Dialog>

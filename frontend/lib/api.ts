@@ -5,25 +5,25 @@ import type { UploadedImage, RecipeRecommendation } from "@/types/image";
 const API =
   process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
 
-  // 긴 필드 정리 + steps/ingredients 3개 제한
-  const normalizeRecipe = (r: any): RecipeRecommendation => ({
-    id: String(r?.id ?? r?._id ?? ""),
-    title: String(r?.title ?? ""),
-    // summary 혹은 description 둘 중 있는 값 사용
-    description: String(((r?.summary ?? r?.description ?? "") as string).replace(/\s+/g, " ")).slice(0, 90),
-    ingredients: Array.isArray(r?.ingredients)
-      ? r.ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
-      : [],
-    steps: Array.isArray(r?.steps)
-      ? r.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
-      : [],
-    imageUrl: String(r?.imageUrl ?? r?.image ?? ""),
-    tags: Array.isArray(r?.tags)
-      ? r.tags.map((t: any) => String(t).trim()).filter(Boolean)
-      : [],
-  });
+// 긴 필드 정리 + steps/ingredients 3개 제한 (목록 프리뷰용)
+const normalizeRecipe = (r: any): RecipeRecommendation => ({
+  id: String(r?.id ?? r?._id ?? ""),
+  title: String(r?.title ?? ""),
+  // summary 혹은 description 둘 중 있는 값 사용
+  description: String(((r?.summary ?? r?.description ?? "") as string).replace(/\s+/g, " ")).slice(0, 90),
+  ingredients: Array.isArray(r?.ingredients)
+    ? r.ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
+    : [],
+  steps: Array.isArray(r?.steps)
+    ? r.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+    : [],
+  imageUrl: String(r?.imageUrl ?? r?.image ?? ""),
+  tags: Array.isArray(r?.tags)
+    ? r.tags.map((t: any) => String(t).trim()).filter(Boolean)
+    : [],
+});
 
-  // 레시피 추천 API 호출
+// 레시피 추천 API 호출
 export const recommendRecipes = async (
   images: UploadedImage[]
 ): Promise<RecipeRecommendation[]> => {
@@ -37,13 +37,7 @@ export const recommendRecipes = async (
       formData.append(`image_${index}`, image.file);
     });
 
-  // // 실제 API 엔드포인트로 교체
-  // const response = await fetch("/api/recipes/recommend", {
-  //   method: "POST",
-  //   body: formData,
-  // });
-
-  //  백엔드로 바로 호출
+  // 백엔드로 바로 호출
   const res = await fetch(`${API}/recipes/recommend`, {
     method: "POST",
     body: formData,
@@ -62,25 +56,17 @@ export const recommendRecipes = async (
     });
     if (!res2.ok) {
       let msg = "레시피 추천 요청에 실패했습니다.";
-      try {
-        msg = await res2.text();
-      } catch {}
+      try { msg = await res2.text(); } catch {}
       throw new Error(msg);
     }
     const data2 = await res2.json();
     return Array.isArray(data2) ? data2.map(normalizeRecipe) : [];
   }
 
-    const data = await res.json()
-    return Array.isArray(data) ? data.map(normalizeRecipe) : [];
+  const data = await res.json();
+  return Array.isArray(data) ? data.map(normalizeRecipe) : [];
 };
 
-//   if (!response.ok) {
-//     throw new Error("레시피 추천 요청에 실패했습니다.");
-//   }
-
-//   return response.json();
-// };
 export type PreferencesIn = {
   sex: string;       // "남성" / "여성"
   age: number;
@@ -105,7 +91,7 @@ export const postPreferences = async (p: PreferencesIn) => {
   return res.json(); // { ok:true, anonId, kcal_target, ... }
 };
 
-// 카드 목록(백엔드 flat 스키마) 불러오기
+// 카드 목록(백엔드 flat 스키마) 불러오기 — 목록 프리뷰 전용
 export async function fetchCardsFlat(limit = 30): Promise<RecipeRecommendation[]> {
   const res = await fetch(`${API}/recipes/cards/flat?limit=${limit}`, {
     cache: "no-store",
@@ -120,26 +106,25 @@ export async function fetchCardsFlat(limit = 30): Promise<RecipeRecommendation[]
   return Array.isArray(raw) ? raw.map(normalizeRecipe) : [];
 }
 
-// === 상세 카드(full steps) 조회 ===
-// 별도 타입(팀원 types 수정 없이 로컬에서만 사용)
-export type RecipeDetail = {
+/** ========= 상세 카드(full steps) 조회 =========
+ *  목록 프리뷰와 분리된 /full 전용 타입/함수
+ */
+export type RecipeFull = {
   id: string;
   title: string;
   imageUrl?: string;
   tags: string[];
   ingredients_full: string[];
   steps_full: string[];
-  // 백엔드가 source 등 추가해 줄 수 있으니 느슨하게 받기
+  source?: any;
   [k: string]: any;
 };
 
-// 상세 모달용: 풀 조리과정/재료
-export async function fetchCardFull(id: string): Promise<RecipeDetail> {
-  const API =
-    process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
-
+// 상세 모달용: 항상 /full 호출
+export async function fetchCardFull(id: string): Promise<RecipeFull> {
+  const base = process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
   const res = await fetch(
-    `${API}/recipes/cards/${encodeURIComponent(id)}/full`,
+    `${base}/recipes/cards/${encodeURIComponent(id)}/full`,
     {
       cache: "no-store",
       credentials: "include", // anon_id 쿠키
@@ -148,13 +133,12 @@ export async function fetchCardFull(id: string): Promise<RecipeDetail> {
 
   if (!res.ok) {
     let msg = "상세 불러오기 실패";
-    try {
-      msg = await res.text();
-    } catch {}
+    try { msg = await res.text(); } catch {}
     throw new Error(msg);
   }
   return res.json();
 }
+
 
 
 // // 테스트용 Mock API - 업로드된 이미지를 사용한 다양한 레시피
