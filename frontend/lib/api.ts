@@ -7,7 +7,7 @@ import type { UploadedImage, RecipeRecommendation } from "@/types/image";
  * -------------------------- */
 const API = process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
 
-/** Blob -> File 강제 변환 (파일명이 없으면 생성) */
+/** Blob → File 강제 변환 (파일명이 없으면 생성) */
 const toFile = (blob: Blob, fallbackName: string): File => {
   if (blob instanceof File) return blob;
   const type = blob.type || "image/jpeg";
@@ -36,12 +36,7 @@ const _isObjId = (v: unknown) =>
 const _pickCardId = (r: any): string | null => {
   if (_isObjId(r?.id)) return String(r.id); // 우리 백엔드: id = recipe_cards._id
   const cand =
-    r?.cardId ??
-    r?.card_id ??
-    r?.card?._id ??
-    r?.card?.id ??
-    r?._id ??
-    null;
+    r?.cardId ?? r?.card_id ?? r?.card?._id ?? r?.card?.id ?? r?._id ?? null;
   return _isObjId(cand) ? String(cand) : null;
 };
 
@@ -59,11 +54,7 @@ const normalizeRecipe = (r: any): RecipeRecommendation => {
 
   const description = String(
     (
-      (r?.summary ??
-        r?.description ??
-        r?.subtitle ??
-        v?.summary ??
-        "") as string
+      (r?.summary ?? r?.description ?? r?.subtitle ?? v?.summary ?? "") as string
     ).replace(/\s+/g, " ")
   ).slice(0, 90);
 
@@ -113,51 +104,113 @@ const normalizeRecipe = (r: any): RecipeRecommendation => {
 export const recommendRecipes = async (
   images: UploadedImage[]
 ): Promise<RecipeRecommendation[]> => {
-  const formData = new FormData();
+  // 확장자 추출
+  const extFrom = (typeOrName?: string): string => {
+    if (!typeOrName) return "jpg";
+    const t = typeOrName.toLowerCase();
+    if (t.includes("/")) return t.split("/")[1] || "jpg";
+    const p = t.split(".").pop();
+    return p && p.length <= 5 ? p : "jpg";
+  };
 
-  // ✅ filename 반드시 전달 (없으면 임의 이름 생성)
+  // 어떤 입력이 와도 File로 변환
+  const toRealFile = async (src: any, idx: number): Promise<File | null> => {
+    try {
+      if (src instanceof File) return src;
+      if (src instanceof Blob) {
+        const name = `image_${idx}.${extFrom(src.type)}`;
+        return new File([src], name, { type: src.type || "image/jpeg" });
+      }
+      if (typeof src === "string" && src.trim()) {
+        const url = src.trim();
+        // data URI
+        if (url.startsWith("data:image/")) {
+          const [meta, base64] = url.split(",", 2);
+          const mime = meta.match(/data:([^;]+)/)?.[1] || "image/jpeg";
+          const bin = atob(base64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const blob = new Blob([bytes], { type: mime });
+          return new File([blob], `image_${idx}.${extFrom(mime)}`, { type: mime });
+        }
+        // blob:URL 또는 http(s) URL
+        try {
+          const resp = await fetch(url);
+          const mime = resp.headers.get("content-type") || "image/jpeg";
+          const blob = await resp.blob();
+          return new File(
+            [blob],
+            `image_${idx}.${extFrom(mime || url)}`,
+            { type: mime || "image/jpeg" }
+          );
+        } catch {
+          return null;
+        }
+      }
+      // 객체 형태: url/src/preview 속성을 추출
+      if (src && typeof src === "object") {
+        const cand = src.url || src.src || src.preview || src.path;
+        if (cand) return toRealFile(String(cand), idx);
+      }
+    } catch {
+      // 무시하고 null 리턴
+    }
+    return null;
+  };
+
+  // 소스 후보 수집
+  const sources: any[] = [];
   images
-    .filter((img) => !!img?.file)
+    .filter(Boolean)
     .slice(0, 9)
-    .forEach((image, index) => {
-      const src = image.file as Blob; // Blob | File
-      const ext =
-        (src as any)?.type?.split?.("/")?.[1]?.trim() ||
-        ((src as any as File)?.name?.split?.(".")?.pop()?.trim() || "jpg");
-      const name =
-        ((src as any as File)?.name?.trim?.() as string) ||
-        `image_${index}.${ext || "jpg"}`;
-      const file = toFile(src, name); // ✅ 항상 File 보장
-      formData.append(`image_${index}`, file, file.name); // ✅ filename 포함
+    .forEach((img) => {
+      if (!img) return;
+      sources.push(
+        (img as any).file,
+        (img as any).blob,
+        (img as any).image,
+        (img as any).src,
+        (img as any).url,
+        (img as any).previewUrl,
+        (img as any).preview
+      );
     });
 
-  // 절대 headers에 multipart 직접 지정하지 말 것 (브라우저가 boundary 붙여야 함)
+  const files: File[] = [];
+  let idx = 0;
+  for (const s of sources) {
+    if (!s) continue;
+    const f = await toRealFile(s, idx);
+    if (f) {
+      files.push(f);
+      idx++;
+      if (files.length >= 9) break;
+    }
+  }
+
+  if (files.length === 0) {
+    throw new Error("선택된 이미지에서 파일을 만들지 못했습니다.");
+  }
+
+  // 1차 업로드: image_0..N 형식 (filename 반드시 포함)
+  const formData = new FormData();
+  files.forEach((file, i) => {
+    formData.append(`image_${i}`, file, file.name);
+  });
+
   const res = await fetch(`${API}/recipes/recommend`, {
     method: "POST",
     body: formData,
-    credentials: "include", // anon_id 쿠키
+    credentials: "include",
   });
 
-  // 실패 시 에러 본문 로그 + files[] 폴백 (동일하게 filename 포함)
+  // 실패 시 files[] 폴백
   if (!res.ok) {
     try {
       console.warn("recommend error 1st:", await res.text());
     } catch {}
-
     const fd = new FormData();
-    images.forEach((img, i) => {
-      if (!img?.file) return;
-      const src = img.file as Blob;
-      const ext =
-        (src as any)?.type?.split?.("/")?.[1]?.trim() ||
-        ((src as any as File)?.name?.split?.(".")?.pop()?.trim() || "jpg");
-      const name =
-        ((src as any as File)?.name?.trim?.() as string) ||
-        `file_${i}.${ext || "jpg"}`;
-      const file = toFile(src, name);
-      fd.append("files", file, file.name);
-    });
-
+    files.forEach((file) => fd.append("files", file, file.name));
     const res2 = await fetch(`${API}/recipes/recommend/files`, {
       method: "POST",
       body: fd,
@@ -245,7 +298,7 @@ export async function fetchCardFull(id: string): Promise<RecipeFull> {
   const url = `${API}/recipes/cards/${encodeURIComponent(id)}/full`;
   let res: Response;
   try {
-    res = await fetch(url, { cache: "no-store" });
+    res = await fetch(url, { cache: "no-store" }); // 상세는 쿠키 불필요
   } catch (e: any) {
     throw new Error(`상세 요청 실패(Fetch): ${e?.message || e}`);
   }
@@ -255,6 +308,8 @@ export async function fetchCardFull(id: string): Promise<RecipeFull> {
   }
   return res.json();
 }
+
+
 
 // // 테스트용 Mock API - 업로드된 이미지를 사용한 다양한 레시피
 // export const mockRecommendRecipes = async (
