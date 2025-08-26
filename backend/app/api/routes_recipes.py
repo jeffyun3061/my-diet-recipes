@@ -5,8 +5,7 @@ from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import re
 import logging
-from fastapi import APIRouter, UploadFile, File, Request, Response, HTTPException, Depends
-
+from fastapi import APIRouter, UploadFile, File, Request, HTTPException, Depends
 from bson import ObjectId
 
 from app.db.init import get_db
@@ -181,9 +180,8 @@ async def _collect_uploads(request: Request) -> List[bytes]:
     if form:
         for k, v in form.multi_items():
             if isinstance(v, UploadFile):
-                if v.content_type in ("image/jpeg", "image/png", "image/webp"):
+                if v.content_type in ("image/jpeg", "image/jpg", "image/png", "image/webp"):
                     imgs.append(await v.read())
-        # 혹시 바디가 없고 쿼리/바이너리로 들어오는 경우 대비: 무시
     return imgs
 
 async def _detect_tokens_from_bytes(imgs: List[bytes]) -> tuple[List[str], List[str]]:
@@ -196,7 +194,6 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> tuple[List[str], List[
 
     raw_names = [x.get("name", "") for x in items if isinstance(x, dict)]
     raw_names = [n for n in raw_names if n]
-    # 오타 수정: raw → raw_names
     tokens = normalize_ingredients_ko(raw_names)
     return tokens, raw_names
 
@@ -240,29 +237,28 @@ def _to_dict(x: Any) -> Any:
         except Exception:
             return x
 
-async def _recommend_core(request: Request, db) -> List[RecipeRecommendationOut]:
-    files = await _collect_uploads(request)
-    if not files:
+async def _recommend_from_imgs(img_bytes: list[bytes], db) -> list[RecipeRecommendationOut]:
+    if not img_bytes:
         raise HTTPException(status_code=400, detail="이미지 파일이 없습니다.")
 
     try:
         # Vision → 원재료명
-        items = await extract_ingredients_from_images(files)
+        items = await extract_ingredients_from_images(img_bytes)
     except VisionNotReady as e:
         log.warning("VisionNotReady: %s", e)
-        items = []
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         log.exception("Vision error")
         raise HTTPException(status_code=500, detail=f"vision_error: {e}")
 
     raw = [x.get("name", "") for x in items if isinstance(x, dict) and x.get("name")]
     tokens = normalize_ingredients_ko(raw)
-    log.info("recommend raw=%s -> tokens=%s (n_images=%d)", raw, tokens, len(files))
+    log.info("recommend raw=%s -> tokens=%s (n_images=%d)", raw, tokens, len(img_bytes))
 
     if not tokens:
         raise HTTPException(
             status_code=422,
-            detail={"msg": "이미지에서 핵심 재료를 찾지 못했습니다.", "debug": {"raw": raw, "images": len(files)}},
+            detail={"msg": "이미지에서 핵심 재료를 찾지 못했습니다.", "debug": {"raw": raw, "images": len(img_bytes)}},
         )
 
     try:
@@ -271,18 +267,68 @@ async def _recommend_core(request: Request, db) -> List[RecipeRecommendationOut]
         log.exception("hybrid_recommend failed")
         raise HTTPException(status_code=500, detail=f"recommend_error: {e}")
 
+async def _read_uploadfiles(uploads: list[UploadFile]) -> list[bytes]:
+    imgs: list[bytes] = []
+    for up in uploads:
+        if not up:
+            continue
+        if up.content_type not in ("image/jpeg", "image/jpg", "image/png", "image/webp"):
+            continue
+        data = await up.read()
+        if data:
+            imgs.append(data)
+    return imgs[:9]  # 최대 9장만 사용 (프리뷰/성능 보호)
+
 # ------------------------------
 # 엔드포인트: 추천
 # ------------------------------
 
-@router.post("/recommend")  # response_model 제거
-async def recommend(request: Request, db=Depends(get_db), _: str = Depends(get_or_set_anon_id)):
-    items = await _recommend_core(request, db)
+@router.post("/recommend")
+async def recommend(
+    image_0: UploadFile | None = File(None),
+    image_1: UploadFile | None = File(None),
+    image_2: UploadFile | None = File(None),
+    image_3: UploadFile | None = File(None),
+    image_4: UploadFile | None = File(None),
+    image_5: UploadFile | None = File(None),
+    image_6: UploadFile | None = File(None),
+    image_7: UploadFile | None = File(None),
+    image_8: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
+    db=Depends(get_db),
+    anon_id: str = Depends(get_or_set_anon_id),
+):
+    """
+    프런트가 보내는 모든 케이스 수신:
+      - image_0..image_8 (최대 9개, 개별 필드)
+      - files[] (다중 업로드 배열)
+    """
+    uploads: list[UploadFile] = []
+    for img in [image_0, image_1, image_2, image_3, image_4, image_5, image_6, image_7, image_8]:
+        if img:
+            uploads.append(img)
+    if files:
+        uploads.extend(files)
+
+    if not uploads:
+        raise HTTPException(status_code=400, detail="이미지 파일이 없습니다.")
+
+    img_bytes = await _read_uploadfiles(uploads)
+    items = await _recommend_from_imgs(img_bytes, db)
     return [_to_dict(it) for it in items]
 
-@router.post("/recommend/files")  # response_model 제거
-async def recommend_files(request: Request, db=Depends(get_db), _: str = Depends(get_or_set_anon_id)):
-    items = await _recommend_core(request, db)
+@router.post("/recommend/files")
+async def recommend_files(
+    request: Request,
+    db=Depends(get_db),
+    _: str = Depends(get_or_set_anon_id),
+):
+    """
+    일부 클라이언트가 필드명을 고정하지 않고 멀티파트로만 보낼 때 대응:
+    request.form()에서 UploadFile들을 긁어와 처리.
+    """
+    form_imgs: list[bytes] = await _collect_uploads(request)
+    items = await _recommend_from_imgs(form_imgs, db)
     return [_to_dict(it) for it in items]
 
 # ------------------------------
@@ -292,18 +338,19 @@ async def recommend_files(request: Request, db=Depends(get_db), _: str = Depends
 cards = APIRouter(prefix="/cards", tags=["recipes"])
 
 def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
-    v = c.variant  # 첫 변형
+    v = getattr(c, "variant", None)  # 첫 변형
     # 1) 우선순위: steps > steps_compact
-    raw_steps = (v.steps or []) if v and v.steps else (v.steps_compact or []) if v else []
+    raw_steps = (v.steps or []) if v and getattr(v, "steps", None) else (getattr(v, "steps_compact", []) or [])
     # 2) 가격/리뷰/쇼핑/잡문 제거 + 3줄(미리보기)
     steps_clean = _drop_noise_lines(raw_steps)[:3]
 
     # 요약 텍스트도 공백만 정리
-    desc = (v.summary or c.subtitle or "") if v else (c.subtitle or "")
+    desc = (getattr(v, "summary", "") or getattr(c, "subtitle", "")) if v else (getattr(c, "subtitle", "") or "")
     desc = re.sub(r"\s+", " ", desc).strip()
 
     # 재료 칩도 노이즈 제거(프리뷰는 6개 상한)
-    ingredients = _clean_ingredients((v.key_ingredients or []) if v else [], max_len=6)
+    key_ing = getattr(v, "key_ingredients", []) if v else []
+    ingredients = _clean_ingredients(key_ing, max_len=6)
 
     return RecipeRecommendationOut(
         id=c.id,
@@ -311,8 +358,8 @@ def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
         description=desc,
         ingredients=ingredients,
         steps=steps_clean,
-        imageUrl=(c.imageUrl or None),
-        tags=(c.tags or []),
+        imageUrl=(getattr(c, "imageUrl", None) or None),
+        tags=(getattr(c, "tags", []) or []),
     )
 
 # 정적/특수 경로를 먼저 선언 (경로 충돌 방지: /flat, /full → /{id})
@@ -328,7 +375,7 @@ async def list_cards_flat(limit: int = 30):
             {"variants.0.steps.0": {"$exists": True}},  # 백필/스키마 차이 대비
         ],
     }
-    # ⬇ 프리뷰 소스 필드들을 넉넉히 포함 (핵심: subtitle, variants)
+    # 프리뷰 소스 필드들을 넉넉히 포함 (핵심: subtitle, variants)
     proj = {
         "id": 1,
         "title": 1,
@@ -363,7 +410,6 @@ async def get_card_flat(card_id: str):
     db = get_db()
 
     # ObjectId 시도 → 실패 시 문자열 id 필드로도 검색(하위호환)
-    q = None
     try:
         q = {"_id": ObjectId(card_id)}
     except Exception:

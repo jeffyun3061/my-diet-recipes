@@ -5,7 +5,8 @@ import type { UploadedImage, RecipeRecommendation } from "@/types/image";
  *  백엔드 베이스 URL
  *  (.env.local → NEXT_PUBLIC_API_BASE=http://localhost:8000)
  * -------------------------- */
-const API = process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
+const API =
+  process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
 
 /** Blob → File 강제 변환 (파일명이 없으면 생성) */
 const toFile = (blob: Blob, fallbackName: string): File => {
@@ -36,7 +37,12 @@ const _isObjId = (v: unknown) =>
 const _pickCardId = (r: any): string | null => {
   if (_isObjId(r?.id)) return String(r.id); // 우리 백엔드: id = recipe_cards._id
   const cand =
-    r?.cardId ?? r?.card_id ?? r?.card?._id ?? r?.card?.id ?? r?._id ?? null;
+    r?.cardId ??
+    r?.card_id ??
+    r?.card?._id ??
+    r?.card?.id ??
+    r?._id ??
+    null;
   return _isObjId(cand) ? String(cand) : null;
 };
 
@@ -54,22 +60,41 @@ const normalizeRecipe = (r: any): RecipeRecommendation => {
 
   const description = String(
     (
-      (r?.summary ?? r?.description ?? r?.subtitle ?? v?.summary ?? "") as string
+      (r?.summary ??
+        r?.description ??
+        r?.subtitle ??
+        v?.summary ??
+        "") as string
     ).replace(/\s+/g, " ")
   ).slice(0, 90);
 
   const ingredients = Array.isArray(r?.ingredients)
-    ? r.ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
+    ? r.ingredients
+        .map((x: any) => String(x).trim())
+        .filter(Boolean)
+        .slice(0, 3)
     : Array.isArray(v?.key_ingredients)
-    ? v.key_ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
+    ? v.key_ingredients
+        .map((x: any) => String(x).trim())
+        .filter(Boolean)
+        .slice(0, 3)
     : [];
 
   const steps = Array.isArray(r?.steps)
-    ? r.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+    ? r.steps
+        .map((s: any) => String(s).trim())
+        .filter(Boolean)
+        .slice(0, 3)
     : Array.isArray(v?.steps)
-    ? v.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+    ? v.steps
+        .map((s: any) => String(s).trim())
+        .filter(Boolean)
+        .slice(0, 3)
     : Array.isArray(v?.steps_compact)
-    ? v.steps_compact.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+    ? v.steps_compact
+        .map((s: any) => String(s).trim())
+        .filter(Boolean)
+        .slice(0, 3)
     : [];
 
   // 태그: 여러 키(tags/hashtags/chips/labels/categories 등)에서 모아 고유화
@@ -121,6 +146,7 @@ export const recommendRecipes = async (
         const name = `image_${idx}.${extFrom(src.type)}`;
         return new File([src], name, { type: src.type || "image/jpeg" });
       }
+      // 문자열 소스(blob URL, data URL, http URL)
       if (typeof src === "string" && src.trim()) {
         const url = src.trim();
         // data URI
@@ -138,18 +164,16 @@ export const recommendRecipes = async (
           const resp = await fetch(url);
           const mime = resp.headers.get("content-type") || "image/jpeg";
           const blob = await resp.blob();
-          return new File(
-            [blob],
-            `image_${idx}.${extFrom(mime || url)}`,
-            { type: mime || "image/jpeg" }
-          );
+          return new File([blob], `image_${idx}.${extFrom(mime || url)}`, {
+            type: mime || "image/jpeg",
+          });
         } catch {
           return null;
         }
       }
       // 객체 형태: url/src/preview 속성을 추출
       if (src && typeof src === "object") {
-        const cand = src.url || src.src || src.preview || src.path;
+        const cand = src.url || src.src || src.preview || src.path || src.previewUrl;
         if (cand) return toRealFile(String(cand), idx);
       }
     } catch {
@@ -298,7 +322,7 @@ export async function fetchCardFull(id: string): Promise<RecipeFull> {
   const url = `${API}/recipes/cards/${encodeURIComponent(id)}/full`;
   let res: Response;
   try {
-    res = await fetch(url, { cache: "no-store" }); // 상세는 쿠키 불필요
+    res = await fetch(url, { cache: "no-store" });
   } catch (e: any) {
     throw new Error(`상세 요청 실패(Fetch): ${e?.message || e}`);
   }
@@ -308,8 +332,6 @@ export async function fetchCardFull(id: string): Promise<RecipeFull> {
   }
   return res.json();
 }
-
-
 
 // // 테스트용 Mock API - 업로드된 이미지를 사용한 다양한 레시피
 // export const mockRecommendRecipes = async (
