@@ -2,48 +2,75 @@
 import type { UploadedImage, RecipeRecommendation } from "@/types/image";
 
 // 백엔드 베이스 URL (.env.local 에 NEXT_PUBLIC_API_BASE=http://localhost:8000)
-const API =
-  process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
 
-// 헬퍼: 카드 id 선택 (응답이 cardId/card_id/card._id 등 다양할 수 있음)
+/* --------------------------
+   공통 유틸
+-------------------------- */
+const _toArr = (v: any): string[] =>
+  Array.isArray(v)
+    ? v.map((x) => String(x).trim()).filter(Boolean)
+    : typeof v === "string"
+    ? String(v)
+        .split(/[#,;|\s]+/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+    : [];
+
+const _uniq = (arr: string[]) => Array.from(new Set(arr));
+
+const _isObjId = (v: unknown) =>
+  typeof v === "string" && /^[a-f0-9]{24}$/i.test(v);
+
 const _pickCardId = (r: any): string | null => {
+  if (_isObjId(r?.id)) return String(r.id); // 우리 백엔드: id = recipe_cards._id
   const cand =
     r?.cardId ??
     r?.card_id ??
     r?.card?._id ??
     r?.card?.id ??
+    r?._id ??
     null;
-  if (cand && String(cand).length === 24) return String(cand);
-  // 리스트가 카드 문서라면 _id가 곧 카드 id일 수 있음 → 24자만 허용
-  if (r?._id && String(r._id).length === 24) return String(r._id);
-  return null;
+  return _isObjId(cand) ? String(cand) : null;
 };
 
-// 긴 필드 정리 + steps/ingredients 3개 제한 (목록 프리뷰용)
-const normalizeRecipe = (r: any): RecipeRecommendation => ({
-  id: String(_pickCardId(r) ?? ""), // 모달에서 /full을 칠 카드 ID만 사용
-  title: String(r?.title ?? ""),
-  // summary 혹은 description 둘 중 있는 값 사용
-  description: String(((r?.summary ?? r?.description ?? "") as string).replace(/\s+/g, " ")).slice(0, 90),
-  ingredients: Array.isArray(r?.ingredients)
-    ? r.ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
-    : [],
-  steps: Array.isArray(r?.steps)
-    ? r.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
-    : [],
-  imageUrl: String(r?.imageUrl ?? r?.image ?? ""),
-  tags: Array.isArray(r?.tags)
-    ? r.tags.map((t: any) => String(t).trim()).filter(Boolean)
-    : [],
-});
+// 팀원 타입에 맞게 프리뷰 정규화
+const normalizeRecipe = (r: any): RecipeRecommendation => {
+  // 다양한 키(tags/hashtags/chips/labels/… )에서 모아서 고유화
+  const rawTags = _uniq([
+    ..._toArr(r?.tags),
+    ..._toArr(r?.hashTags),
+    ..._toArr(r?.hashtags),
+    ..._toArr(r?.chips),
+    ..._toArr(r?.labels),
+    ..._toArr(r?.tagList),
+    ..._toArr(r?.categories),
+    ..._toArr(r?.category),
+  ]);
 
-// 레시피 추천 API 호출
+  return {
+    id: String(_pickCardId(r) ?? ""),
+    title: String(r?.title ?? ""),
+    description: String(((r?.summary ?? r?.description ?? "") as string).replace(/\s+/g, " ")).slice(0, 90),
+    ingredients: Array.isArray(r?.ingredients)
+      ? r.ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
+      : [],
+    steps: Array.isArray(r?.steps)
+      ? r.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+      : [],
+    imageUrl: String(r?.imageUrl ?? r?.image ?? ""),
+    tags: rawTags,
+  };
+};
+
+/* --------------------------
+   레시피 추천 (이미지 업로드)
+-------------------------- */
 export const recommendRecipes = async (
   images: UploadedImage[]
 ): Promise<RecipeRecommendation[]> => {
   const formData = new FormData();
 
-  // 최대 9장 + 파일만 전송
   images
     .filter((img) => !!img?.file)
     .slice(0, 9)
@@ -51,17 +78,19 @@ export const recommendRecipes = async (
       formData.append(`image_${index}`, image.file);
     });
 
-  // 백엔드로 바로 호출
+  // 1차: /recipes/recommend
   const res = await fetch(`${API}/recipes/recommend`, {
     method: "POST",
     body: formData,
-    credentials: "include", // anon_id 쿠키 주고받기
+    credentials: "include", // anon_id 쿠키
   });
 
-  // 호환 이슈 대비: 실패 시 files[] 엔드포인트로 폴백
+  // 실패 시 files[] 폴백
   if (!res.ok) {
     const fd = new FormData();
-    images.forEach((img) => { if (img?.file) fd.append("files", img.file); });
+    images.forEach((img) => {
+      if (img?.file) fd.append("files", img.file);
+    });
 
     const res2 = await fetch(`${API}/recipes/recommend/files`, {
       method: "POST",
@@ -70,7 +99,9 @@ export const recommendRecipes = async (
     });
     if (!res2.ok) {
       let msg = "레시피 추천 요청에 실패했습니다.";
-      try { msg = await res2.text(); } catch {}
+      try {
+        msg = await res2.text();
+      } catch {}
       throw new Error(msg);
     }
     const data2 = await res2.json();
@@ -81,31 +112,37 @@ export const recommendRecipes = async (
   return Array.isArray(data) ? data.map(normalizeRecipe) : [];
 };
 
+/* --------------------------
+   개인정보 저장
+-------------------------- */
 export type PreferencesIn = {
-  sex: string;       // "남성" / "여성"
+  sex: string; // "남성" / "여성"
   age: number;
   heightCm: number;
   weightKg: number;
-  diet: string;      // "저탄고지" 등 라벨
+  diet: string; // "저탄고지" 등 라벨
 };
 
-// 개인정보 저장
 export const postPreferences = async (p: PreferencesIn) => {
   const res = await fetch(`${API}/preferences`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    credentials: "include", // anon_id 쿠키 주고받기
+    credentials: "include",
     body: JSON.stringify(p),
   });
   if (!res.ok) {
     let msg = "개인정보 저장에 실패했습니다.";
-    try { msg = await res.text(); } catch {}
+    try {
+      msg = await res.text();
+    } catch {}
     throw new Error(msg);
   }
   return res.json(); // { ok:true, anonId, kcal_target, ... }
 };
 
-// 카드 목록(백엔드 flat 스키마) 불러오기 — 목록 프리뷰 전용
+/* --------------------------
+   카드 목록(flat) – 옵션
+-------------------------- */
 export async function fetchCardsFlat(limit = 30): Promise<RecipeRecommendation[]> {
   const res = await fetch(`${API}/recipes/cards/flat?limit=${limit}`, {
     cache: "no-store",
@@ -113,16 +150,18 @@ export async function fetchCardsFlat(limit = 30): Promise<RecipeRecommendation[]
   });
   if (!res.ok) {
     let msg = "카드 목록을 불러오지 못했습니다.";
-    try { msg = await res.text(); } catch {}
+    try {
+      msg = await res.text();
+    } catch {}
     throw new Error(msg);
   }
   const raw = await res.json();
   return Array.isArray(raw) ? raw.map(normalizeRecipe) : [];
 }
 
-/** ========= 상세 카드(full steps) 조회 =========
- *  목록 프리뷰와 분리된 /full 전용 타입/함수
- */
+/* --------------------------
+   상세 카드(full steps)
+-------------------------- */
 export type RecipeFull = {
   id: string;
   title: string;
@@ -134,26 +173,21 @@ export type RecipeFull = {
   [k: string]: any;
 };
 
-// 상세 모달용: 항상 /full 호출
 export async function fetchCardFull(id: string): Promise<RecipeFull> {
-  const base = process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
-  const res = await fetch(
-    `${base}/recipes/cards/${encodeURIComponent(id)}/full`,
-    {
-      cache: "no-store",
-      credentials: "include", // anon_id 쿠키
-    }
-  );
-
+  const url = `${API}/recipes/cards/${encodeURIComponent(id)}/full`;
+  let res: Response;
+  try {
+    // 상세는 쿠키 불필요 → 프리플라이트/자격증명 요구 방지
+    res = await fetch(url, { cache: "no-store" }); // credentials 제거
+  } catch (e: any) {
+    throw new Error(`상세 요청 실패(Fetch): ${e?.message || e}`);
+  }
   if (!res.ok) {
-    let msg = "상세 불러오기 실패";
-    try { msg = await res.text(); } catch {}
-    throw new Error(msg);
+    const body = await res.text().catch(() => "");
+    throw new Error(`상세 요청 ${res.status}: ${body || res.statusText}`);
   }
   return res.json();
 }
-
-
 
 // // 테스트용 Mock API - 업로드된 이미지를 사용한 다양한 레시피
 // export const mockRecommendRecipes = async (

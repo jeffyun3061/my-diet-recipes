@@ -24,16 +24,17 @@ interface Props {
   onClose: () => void;
 }
 
+const isObjId = (v: unknown) =>
+  typeof v === "string" && /^[a-f0-9]{24}$/i.test(v.trim());
+
 export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
-  // /full 결과만 사용
+  // /full 결과만 상태로 들고, 없는 경우에는 프리뷰로 폴백
   const [full, setFull] = useState<RecipeFull | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // 모달 열릴 때마다 /full 호출 (프리뷰는 모달에서 사용 안 함)
   useEffect(() => {
     let alive = true;
-    const ac = new AbortController();
 
     async function load() {
       if (!open || !recipe?.id) {
@@ -41,18 +42,17 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
         setErr(null);
         return;
       }
-
-      // 카드 ID 유효성(ObjectId 24자) 가드: 유효하지 않으면 /full 호출을 막는다.
-      if (typeof recipe.id !== "string" || recipe.id.length !== 24) {
+      const rid = String(recipe.id);
+      if (!isObjId(rid)) {
         setFull(null);
-        setErr("상세를 열 수 있는 카드 ID가 없습니다.");
+        setErr(null); // 폴백으로만 표시
         return;
       }
 
       setLoading(true);
       setErr(null);
       try {
-        const data = await fetchCardFull(recipe.id);
+        const data = await fetchCardFull(rid);
         if (!alive) return;
         setFull(data);
       } catch (e: any) {
@@ -66,13 +66,12 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
     load();
     return () => {
       alive = false;
-      ac.abort();
     };
   }, [open, recipe?.id]);
 
   if (!recipe) return null;
 
-  // 제목/이미지/태그는 풀 응답 우선, 없으면 목록 값 사용
+  // 헤더 영역(제목/이미지/태그)은 풀데이터 우선, 없으면 목록 값으로 폴백
   const title = full?.title ?? recipe.title ?? "";
   const imageUrl =
     (full?.imageUrl && String(full.imageUrl)) ||
@@ -80,9 +79,11 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
     "/images/recipe-placeholder.jpg";
   const tags = (full?.tags?.length ? full.tags : recipe.tags) || [];
 
-  // 핵심: 모달에서는 풀데이터만 사용 (프리뷰 3줄로 대체하지 않음)
-  const ingredients = full?.ingredients_full || [];
-  const steps = full?.steps_full || [];
+  // 본문: 풀데이터 우선, 비면 프리뷰 steps/ingredients 사용
+  const ingredients =
+    full?.ingredients_full?.length ? full.ingredients_full : recipe.ingredients || [];
+  const steps =
+    full?.steps_full?.length ? full.steps_full : recipe.steps || [];
 
   return (
     <Dialog
@@ -125,12 +126,12 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
           </Box>
         )}
 
+        {/* 내용 */}
         <Box sx={{ p: 3 }}>
           <Typography variant="h5" fontWeight={700} gutterBottom>
             {title}
           </Typography>
 
-          {/* (설명은 /full 스키마에 없으니 목록의 description만 보조로) */}
           {recipe.description ? (
             <Typography variant="body1" color="text.secondary" mb={3}>
               {recipe.description}
@@ -153,23 +154,19 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
             </Box>
           )}
 
-          {/* 에러 메시지 */}
+          {/* 에러 메시지 (프리뷰 폴백은 정상 동작하므로 안내만) */}
           {err && (
             <Typography variant="body2" color="error" sx={{ mb: 2 }}>
               {err}
             </Typography>
           )}
 
-          {/* 재료: 풀데이터만 표시. 로딩 중/없음 처리 분리 */}
+          {/* 재료 */}
           <Typography variant="h6" fontWeight={600} gutterBottom>
-            재료{ingredients.length ? " (전체)" : ""}
+            재료{full?.ingredients_full?.length ? " (전체)" : ""}
           </Typography>
           <Box mb={3}>
-            {loading ? (
-              <Typography variant="body2" color="text.secondary">
-                재료 불러오는 중…
-              </Typography>
-            ) : ingredients.length ? (
+            {ingredients.length ? (
               ingredients.map((ingredient, index) => (
                 <Chip
                   key={`${ingredient}-${index}`}
@@ -186,16 +183,12 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
             )}
           </Box>
 
-          {/* 조리 과정: 풀데이터만 표시. 프리뷰 3줄로 대체하지 않음 */}
+          {/* 조리 과정 */}
           <Typography variant="h6" fontWeight={600} gutterBottom>
-            조리 과정{steps.length ? " (전체)" : ""}
+            조리 과정{full?.steps_full?.length ? " (전체)" : ""}
           </Typography>
           <Stack spacing={2} sx={{ maxHeight: 320, overflow: "auto", pr: 1 }}>
-            {loading ? (
-              <Typography variant="body2" color="text.secondary">
-                조리 과정 불러오는 중…
-              </Typography>
-            ) : steps.length ? (
+            {steps.length ? (
               steps.map((step, index) => (
                 <Box key={`${index}-${step.slice(0, 12)}`} sx={{ display: "flex", gap: 2 }}>
                   <Box

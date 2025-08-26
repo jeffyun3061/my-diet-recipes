@@ -58,7 +58,7 @@ ING_NOISE_RE = re.compile(r"(원\b|구매|쿠폰|특가|스폰|광고|배송|장
 def _clean_ingredients(chips: list[str], max_len: Optional[int] = None) -> list[str]:
     out, seen = [], set()
     for s in chips or []:
-        t = re.sub(r"^\s*[\[\(].*?[\]\)]\s*", "", str(s).strip())  # [올팜] 같은 라벨 제거
+        t = re.sub(r"^\s*[\[\(].*?[\]\)]\s*", "", str(s).strip())  # [라벨] 제거
         if not t or ING_NOISE_RE.search(t):
             continue
         t = re.sub(r"\s+", " ", t).strip()
@@ -68,6 +68,8 @@ def _clean_ingredients(chips: list[str], max_len: Optional[int] = None) -> list[
         if max_len is not None and len(out) >= max_len:
             break
     return out
+
+
 
 def _ensure_id_from__id(doc: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -354,60 +356,125 @@ async def get_card_flat(card_id: str):
         d["variants"] = d["variants"][:1]
     return _strict_to_flat(to_strict_card(d)).model_dump()
 
-# 상세 모달용 ‘풀 조리과정’ (고정 경로, 반드시 /{card_id} 위!)
+# ------------------------------
+# !! 핵심: 상세 모달용 ‘풀 조리과정’ (카드 id + 레시피 id 둘 다 지원)
+# ------------------------------
 @cards.get("/{card_id}/full")
 async def get_card_full(card_id: str):
     """
     상세 모달 전용:
-    - steps_full: 광고/가격/쇼핑 라인 제거된 '완전한' 조리과정 (길이 제한 없음)
-    - ingredients_full: 원문 재료 리스트(있으면) — 노이즈 제거(상한 없음)
-    우선순위:
-      1) 원본 recipes에서 안전 추출 후 정제
-      2) recipe_cards 문서에 백필되어 있는 steps_full/ingredients_full로 폴백
+      A) card_id가 recipe_cards._id → 카드 기반으로 구성
+      B) card_id가 recipes._id       → 원본 기반 구성 + 역매핑으로 카드 찾아 최종 폴백
     """
     db = get_db()
 
-    # 1) 카드 찾기 (_id 우선, 하위호환으로 id 필드도 허용)
+    def _list_from(d, keys: list[str] = []) -> list[str]:
+        if isinstance(d, dict):
+            for k in keys:
+                v = d.get(k)
+                if isinstance(v, list):
+                    return [str(x) for x in v if x]
+                if isinstance(v, str) and v.strip():
+                    parts = re.split(r"\s*(?:\n|^\d+[)\.]|\r)+\s*", v)
+                    return [p.strip() for p in parts if p.strip()]
+        if isinstance(d, list):
+            return [str(x) for x in d if x]
+        if isinstance(d, str) and d.strip():
+            parts = re.split(r"\s*(?:\n|^\d+[)\.]|\r)+\s*", d)
+            return [p.strip() for p in parts if p.strip()]
+        return []
+
+    # ---------- A) recipe_cards._id 로 시도 ----------
     card = None
     try:
         card = await db["recipe_cards"].find_one(
             {"_id": ObjectId(card_id)},
-            {"_id": 1, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "source": 1,
-             "steps_full": 1, "ingredients_full": 1}
+            {
+                "_id": 1, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "source": 1,
+                "steps_full": 1, "ingredients_full": 1, "variants": 1
+            }
         )
     except Exception:
-        card = await db["recipe_cards"].find_one(
-            {"id": card_id},
-            {"_id": 1, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "source": 1,
-             "steps_full": 1, "ingredients_full": 1}
-        )
+        pass
 
-    if not card:
-        raise HTTPException(status_code=404, detail="card not found")
+    if card:
+        steps_full: list[str] = []
+        ingredients_full: list[str] = []
 
-    # 2) 원본 recipe 찾기 → 최우선 추출
-    steps_full: list[str] = []
-    ingredients_full: list[str] = []
+        # 원본 recipes 우선
+        r = await _find_source_recipe(card, db)
+        if r:
+            steps_full = _drop_noise_lines(_steps_from_any(r))
+            ing = None
+            for entry in [
+                ("ingredients", ["list", "lines", "original"]),
+                "ingredients", "재료", "재료목록"
+            ]:
+                if isinstance(entry, tuple):
+                    v = r.get(entry[0])
+                    if v:
+                        ing = _list_from(v, entry[1])
+                        if ing: break
+                else:
+                    v = r.get(entry)
+                    if v:
+                        ing = _list_from(v, [])
+                        if ing: break
+            ingredients_full = _clean_ingredients([s for s in (ing or []) if str(s).strip()], max_len=None)
 
-    r = await _find_source_recipe(card, db)
+        # 카드 백필 폴백
+        if not steps_full:
+            steps_full = _drop_noise_lines([str(x) for x in (card.get("steps_full") or []) if str(x).strip()])
+        if not ingredients_full:
+            ingredients_full = _clean_ingredients([str(x) for x in (card.get("ingredients_full") or []) if str(x).strip()], max_len=None)
+
+        # variants 최종 폴백
+        if (not steps_full) or (not ingredients_full):
+            v0 = (card.get("variants") or [None])[0] or {}
+            if not steps_full:
+                raw_steps = (v0.get("steps") or []) or (v0.get("steps_compact") or [])
+                steps_full = _drop_noise_lines([str(x).strip() for x in raw_steps if str(x).strip()])
+            if not ingredients_full:
+                ingredients_full = _clean_ingredients([str(x).strip() for x in (v0.get("key_ingredients") or []) if str(x).strip()], max_len=None)
+
+        # --- persist on-demand fill (A-branch) ---
+        try:
+            to_set: Dict[str, Any] = {}
+            if steps_full and not (card.get("steps_full") or []):
+                to_set["steps_full"] = steps_full
+            if ingredients_full and not (card.get("ingredients_full") or []):
+                to_set["ingredients_full"] = ingredients_full
+            if to_set:
+                await db["recipe_cards"].update_one({"_id": card["_id"]}, {"$set": to_set})
+        except Exception:
+            pass
+
+        return {
+            "id": str(card.get("_id") or card.get("id")),
+            "title": card.get("title") or "",
+            "imageUrl": card.get("imageUrl"),
+            "tags": card.get("tags") or [],
+            "ingredients_full": ingredients_full,
+            "steps_full": steps_full,
+            "source": card.get("source") or {},
+        }
+
+    # ---------- B) recipes._id 로 처리 + 역매핑 ----------
+    try:
+        r = await db["recipes"].find_one({"_id": ObjectId(card_id)})
+    except Exception:
+        r = None
+
     if r:
-        steps_full = _drop_noise_lines(_steps_from_any(r))
+        title = str(r.get("title") or r.get("name") or "")
+        image = None
+        if isinstance(r.get("images"), list) and r["images"]:
+            image = r["images"][0]
+        image = image or r.get("image") or r.get("thumbnail") or None
+        tags = r.get("tags") or r.get("categories") or []
 
-        def _list_from(d, keys: list[str] = []) -> list[str]:
-            if isinstance(d, dict):
-                for k in keys:
-                    v = d.get(k)
-                    if isinstance(v, list):
-                        return [str(x) for x in v if x]
-                    if isinstance(v, str) and v.strip():
-                        parts = re.split(r"\s*(?:\n|^\d+[)\.]|\r)+\s*", v)
-                        return [p.strip() for p in parts if p.strip()]
-            if isinstance(d, list):
-                return [str(x) for x in d if x]
-            if isinstance(d, str) and d.strip():
-                parts = re.split(r"\s*(?:\n|^\d+[)\.]|\r)+\s*", d)
-                return [p.strip() for p in parts if p.strip()]
-            return []
+        # 1) 원본에서 추출
+        steps_full = _drop_noise_lines(_steps_from_any(r))
 
         ing = None
         for entry in [
@@ -418,32 +485,83 @@ async def get_card_full(card_id: str):
                 v = r.get(entry[0])
                 if v:
                     ing = _list_from(v, entry[1])
-                    if ing:
-                        break
+                    if ing: break
             else:
                 v = r.get(entry)
                 if v:
                     ing = _list_from(v, [])
-                    if ing:
-                        break
-
+                    if ing: break
         ingredients_full = _clean_ingredients([s for s in (ing or []) if str(s).strip()], max_len=None)
 
-    # 3) 폴백: recipe_cards 자체의 백필 필드 사용
-    if not steps_full:
-        steps_full = _drop_noise_lines([str(x) for x in (card.get("steps_full") or []) if str(x).strip()])
-    if not ingredients_full:
-        ingredients_full = _clean_ingredients([str(x) for x in (card.get("ingredients_full") or []) if str(x).strip()], max_len=None)
+        # 2) 역매핑: recipes → recipe_cards (url/title/recipe_id 근사 매칭)
+        mc = None
+        if (not steps_full) or (not ingredients_full):
+            url = r.get("url") or r.get("link")
+            rid_from_url = None
+            if isinstance(url, str):
+                m = re.search(r"/([^/]+)$", url.strip())
+                if m:
+                    rid_from_url = m.group(1)
 
-    return {
-        "id": str(card.get("_id") or card.get("id")),
-        "title": card.get("title") or "",
-        "imageUrl": card.get("imageUrl"),
-        "tags": card.get("tags") or [],
-        "ingredients_full": ingredients_full,
-        "steps_full": steps_full,
-        "source": card.get("source") or {},
-    }
+            mc = await db["recipe_cards"].find_one(
+                {"$or": [
+                    {"source.url": url}, {"source.href": url},
+                    {"source.recipe_id": rid_from_url} if rid_from_url else {"_id": None},
+                    {"title": title} if title else {"_id": None},
+                ]},
+                {
+                    "_id": 1, "title": 1, "imageUrl": 1, "tags": 1, "variants": 1,
+                    "steps_full": 1, "ingredients_full": 1, "source": 1
+                }
+            )
+
+            if mc:
+                # 카드 백필 폴백
+                if not steps_full:
+                    steps_full = _drop_noise_lines([str(x) for x in (mc.get("steps_full") or []) if str(x).strip()])
+                if not ingredients_full:
+                    ingredients_full = _clean_ingredients([str(x) for x in (mc.get("ingredients_full") or []) if str(x).strip()], max_len=None)
+
+                # variants 최종 폴백
+                if (not steps_full) or (not ingredients_full):
+                    v0 = (mc.get("variants") or [None])[0] or {}
+                    if not steps_full:
+                        raw_steps = (v0.get("steps") or []) or (v0.get("steps_compact") or [])
+                        steps_full = _drop_noise_lines([str(x).strip() for x in raw_steps if str(x).strip()])
+                    if not ingredients_full:
+                        ingredients_full = _clean_ingredients([str(x).strip() for x in (v0.get("key_ingredients") or []) if str(x).strip()], max_len=None)
+
+                # --- persist for mapped card (B-branch) ---
+                try:
+                    to_set: Dict[str, Any] = {}
+                    if steps_full and not (mc.get("steps_full") or []):
+                        to_set["steps_full"] = steps_full
+                    if ingredients_full and not (mc.get("ingredients_full") or []):
+                        to_set["ingredients_full"] = ingredients_full
+                    if to_set:
+                        await db["recipe_cards"].update_one({"_id": mc["_id"]}, {"$set": to_set})
+                except Exception:
+                    pass
+
+                # 카드에서 태그/이미지 보강
+                if not image:
+                    image = mc.get("imageUrl") or image
+                if not tags:
+                    tags = mc.get("tags") or tags
+
+        return {
+            "id": str(r["_id"]),   # 프론트는 이 id로 호출했음
+            "title": title,
+            "imageUrl": image,
+            "tags": [str(t) for t in (tags or [])],
+            "ingredients_full": ingredients_full,
+            "steps_full": steps_full,
+            "source": r.get("source") or {},
+        }
+
+    # 전부 실패
+    raise HTTPException(status_code=404, detail="card not found")
+
 
 # 기본(스트릭트) 경로는 뒤에 선언
 @cards.get("", response_model=List[RecipeCardStrict])
