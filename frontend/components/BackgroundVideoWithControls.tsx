@@ -6,6 +6,7 @@ import PauseIcon from "@mui/icons-material/Pause";
 import VolumeOffIcon from "@mui/icons-material/VolumeOff";
 import VolumeUpIcon from "@mui/icons-material/VolumeUp";
 import { useRef, useState, useEffect } from "react";
+import { green } from "@mui/material/colors";
 import { Gaegu } from "next/font/google";
 
 const gamjaFlower = Gaegu({
@@ -219,11 +220,11 @@ export default function BackgroundVideoWithControls() {
             }}
           >
             나의{" "}
-            <Box component="span" sx={{ color: "lightgreen" }}>
+            <Box component="span" sx={{ color: green[500] }}>
               다
             </Box>
             이어트 레
-            <Box component="span" sx={{ color: "lightgreen" }}>
+            <Box component="span" sx={{ color: green[500] }}>
               시피
             </Box>
           </Typography>
