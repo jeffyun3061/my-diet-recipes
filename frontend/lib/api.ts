@@ -5,6 +5,24 @@ import type { UploadedImage, RecipeRecommendation } from "@/types/image";
 const API =
   process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
 
+  // 긴 필드 정리 + steps/ingredients 3개 제한
+  const normalizeRecipe = (r: any): RecipeRecommendation => ({
+    id: String(r?.id ?? r?._id ?? ""),
+    title: String(r?.title ?? ""),
+    // summary 혹은 description 둘 중 있는 값 사용
+    description: String(((r?.summary ?? r?.description ?? "") as string).replace(/\s+/g, " ")).slice(0, 90),
+    ingredients: Array.isArray(r?.ingredients)
+      ? r.ingredients.map((x: any) => String(x).trim()).filter(Boolean).slice(0, 3)
+      : [],
+    steps: Array.isArray(r?.steps)
+      ? r.steps.map((s: any) => String(s).trim()).filter(Boolean).slice(0, 3)
+      : [],
+    imageUrl: String(r?.imageUrl ?? r?.image ?? ""),
+    tags: Array.isArray(r?.tags)
+      ? r.tags.map((t: any) => String(t).trim()).filter(Boolean)
+      : [],
+  });
+
   // 레시피 추천 API 호출
 export const recommendRecipes = async (
   images: UploadedImage[]
@@ -49,10 +67,12 @@ export const recommendRecipes = async (
       } catch {}
       throw new Error(msg);
     }
-    return (await res2.json()) as RecipeRecommendation[];
+    const data2 = await res2.json();
+    return Array.isArray(data2) ? data2.map(normalizeRecipe) : [];
   }
 
-   return (await res.json()) as RecipeRecommendation[];
+    const data = await res.json()
+    return Array.isArray(data) ? data.map(normalizeRecipe) : [];
 };
 
 //   if (!response.ok) {
@@ -85,14 +105,28 @@ export const postPreferences = async (p: PreferencesIn) => {
   return res.json(); // { ok:true, anonId, kcal_target, ... }
 };
 
-// 테스트용 Mock API - 업로드된 이미지를 사용한 다양한 레시피
-export const mockRecommendRecipes = async (
-  images: UploadedImage[]
-): Promise<RecipeRecommendation[]> => {
-  await new Promise((resolve) => setTimeout(resolve, 2000));
+// 카드 목록(백엔드 flat 스키마) 불러오기
+export async function fetchCardsFlat(limit = 30): Promise<RecipeRecommendation[]> {
+  const res = await fetch(`${API}/recipes/cards/flat?limit=${limit}`, {
+    cache: "no-store",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    let msg = "카드 목록을 불러오지 못했습니다.";
+    try { msg = await res.text(); } catch {}
+    throw new Error(msg);
+  }
+  const raw = await res.json();
+  return Array.isArray(raw) ? raw.map(normalizeRecipe) : [];
+}
 
-  return [
+// // 테스트용 Mock API - 업로드된 이미지를 사용한 다양한 레시피
+// export const mockRecommendRecipes = async (
+//   images: UploadedImage[]
+// ): Promise<RecipeRecommendation[]> => {
+//   await new Promise((resolve) => setTimeout(resolve, 2000));
 
+//   return [
     
 //     {
 //       id: "1",
@@ -247,5 +281,5 @@ export const mockRecommendRecipes = async (
 //       imageUrl: "/test_copy_2.jpg", // 세 번째 이미지 재사용
 //       tags: ["비건", "채식", "템페", "완전식품"],
 //     },
-  ];
-};
+//   ];
+// };

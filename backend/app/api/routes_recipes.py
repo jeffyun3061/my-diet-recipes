@@ -12,10 +12,10 @@ from app.services.crawl10000.recommender import hybrid_recommend
 from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
 from app.services.crawl10000.etl import normalize_ingredients
 
-# ADD: 카드 스키마 (표시용 3~4 태그/요약/단계 컷)
+# 카드 스키마 (표시용 3~4 태그/요약/단계 컷)
 from app.models.schemas import RecipeCardStrict, to_strict_card
 
-
+# 메인 라우터
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
@@ -75,13 +75,11 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> List[str]:
 
 
 async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
-
     # 기존 단순 find/sort 대신 하이브리드 추천으로 교체.
     # tokens: 비전/LLM에서 추출한 slug 리스트
-
     db = get_db()
 
-    # (필요 시) 사용자 식단 라벨을 프리미엄 가점으로 반영하고 싶다면 여기서 꺼내서 넣으면 됨.
+    # (필요 시) 사용자 식단 라벨 가점 반영 가능
     # ex) prefs = await db["preferences"].find_one({"anon_id": ...})
     user_diet = ""  # TODO: "lowcarb" 등 내부 태그 문자열로 매핑해 넣으면 가점(+0.05)
 
@@ -101,6 +99,7 @@ async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
         )
         for c in cards
     ]
+
 
 @router.post("/recommend", response_model=List[RecipeRecommendationOut])
 async def recommend_from_images(
@@ -175,49 +174,83 @@ async def recommend_from_files(
 
     return [c.model_dump() for c in cards]
 
-# ADD: 카드 API (실서비스용) — "만개의레시피만" 저장된 컬렉션에서 카드 반환
-# 컬렉션명: recipe_cards  (id/recipe_id, title, subtitle, tags[3~4], variants[...], source{site,url,recipe_id})
 
-@router.get("/cards", response_model=List[RecipeCardStrict])
-async def list_recipe_cards(limit: int = 30):
+# Cards 전용 서브라우터 (충돌 방지 고정) 
+
+cards = APIRouter(prefix="/cards", tags=["recipes"])
+
+def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
+    # RecipeCardStrict → 기존 프론트 카드 스키마로 평탄화
+    v = c.variant  # 모델에서 첫 변형을 반환하는 프로퍼티
+    return RecipeRecommendationOut(
+        id=c.id,
+        title=c.title,
+        description=(v.summary or c.subtitle or ""),
+        ingredients=(v.key_ingredients or []),
+        steps=(v.steps or []),           # 이미 3줄 요약
+        imageUrl=(c.imageUrl or None),
+        tags=(c.tags or []),
+    )
+
+# 정적/특수 경로를 먼저 선언 
+
+@cards.get("/flat", response_model=List[RecipeRecommendationOut])
+async def list_cards_flat(limit: int = 30):
     db = get_db()
     cur = db["recipe_cards"].find(
-        {"source.site": {"$in": ["만개의레시피", "unknown"]}},   # 만개 + 필요시 unknown
-        {
-            "_id": 0,
-            "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1,
-            "variants": 1,  # ← 통으로 읽고
-        }
+        {"source.site": {"$in": ["만개의레시피", "unknown"]}},
+        {"_id": 0, "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
     ).sort([("source.recipe_id", -1), ("id", 1)]).limit(limit)
-
     docs = await cur.to_list(length=limit)
-
-    # ← 여기서 첫 변형만 사용 (드라이버/서버별 $slice 이슈 회피)
     for d in docs:
-        v = d.get("variants")
-        if isinstance(v, list):
-            d["variants"] = v[:1]
+        if isinstance(d.get("variants"), list):
+            d["variants"] = d["variants"][:1]
+    strict_cards = [to_strict_card(d) for d in docs]
+    return [_strict_to_flat(c).model_dump() for c in strict_cards]
 
-    return [to_strict_card(d) for d in docs]
 
-
-@router.get("/cards/{card_id}", response_model=RecipeCardStrict)
-async def get_recipe_card(card_id: str):
+@cards.get("/{card_id}/flat", response_model=RecipeRecommendationOut)
+async def get_card_flat(card_id: str):
     db = get_db()
     d = await db["recipe_cards"].find_one(
         {"id": card_id},
-        {
-            "_id": 0,
-            "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1,
-            "variants": 1,  # ← 여기서도 $slice 제거
-            "source.site": 1, "source.recipe_id": 1,
-        }
+        {"_id": 0, "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
     )
     if not d:
         raise HTTPException(status_code=404, detail="recipe not found")
-
     if isinstance(d.get("variants"), list):
         d["variants"] = d["variants"][:1]
+    return _strict_to_flat(to_strict_card(d)).model_dump()
 
+# 기본(스트릭트) 경로는 뒤에 선언
+
+@cards.get("", response_model=List[RecipeCardStrict])
+async def list_cards(limit: int = 30):
+    db = get_db()
+    cur = db["recipe_cards"].find(
+        {"source.site": {"$in": ["만개의레시피", "unknown"]}},
+        {"_id": 0, "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
+    ).sort([("source.recipe_id", -1), ("id", 1)]).limit(limit)
+    docs = await cur.to_list(length=limit)
+    for d in docs:
+        if isinstance(d.get("variants"), list):
+            d["variants"] = d["variants"][:1]
+    return [to_strict_card(d) for d in docs]
+
+
+@cards.get("/{card_id}", response_model=RecipeCardStrict)
+async def get_card(card_id: str):
+    db = get_db()
+    d = await db["recipe_cards"].find_one(
+        {"id": card_id},
+        {"_id": 0, "id": 1, "title": 1, "subtitle": 1, "tags": 1, "imageUrl": 1, "variants": 1}
+    )
+    if not d:
+        raise HTTPException(status_code=404, detail="recipe not found")
+    if isinstance(d.get("variants"), list):
+        d["variants"] = d["variants"][:1]
     return to_strict_card(d)
 
+
+# 메인 라우터에 서브라우터 등록 (경로 충돌 방지)
+router.include_router(cards)

@@ -116,6 +116,7 @@ class RecipeVariantStrict(BaseModel):
                 out.append(s)
             if len(out) >= MAX_STRICT_STEPS:
                 break
+        
         return out
 
 
