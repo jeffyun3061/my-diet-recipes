@@ -120,6 +120,43 @@ export async function fetchCardsFlat(limit = 30): Promise<RecipeRecommendation[]
   return Array.isArray(raw) ? raw.map(normalizeRecipe) : [];
 }
 
+// === 상세 카드(full steps) 조회 ===
+// 별도 타입(팀원 types 수정 없이 로컬에서만 사용)
+export type RecipeDetail = {
+  id: string;
+  title: string;
+  imageUrl?: string;
+  tags: string[];
+  ingredients_full: string[];
+  steps_full: string[];
+  // 백엔드가 source 등 추가해 줄 수 있으니 느슨하게 받기
+  [k: string]: any;
+};
+
+// 상세 모달용: 풀 조리과정/재료
+export async function fetchCardFull(id: string): Promise<RecipeDetail> {
+  const API =
+    process.env.NEXT_PUBLIC_API_BASE?.trim() || "http://localhost:8000";
+
+  const res = await fetch(
+    `${API}/recipes/cards/${encodeURIComponent(id)}/full`,
+    {
+      cache: "no-store",
+      credentials: "include", // anon_id 쿠키
+    }
+  );
+
+  if (!res.ok) {
+    let msg = "상세 불러오기 실패";
+    try {
+      msg = await res.text();
+    } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+
 // // 테스트용 Mock API - 업로드된 이미지를 사용한 다양한 레시피
 // export const mockRecommendRecipes = async (
 //   images: UploadedImage[]

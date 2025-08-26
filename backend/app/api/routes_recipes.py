@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 from typing import List, Dict, Any
+import re
 from fastapi import APIRouter, UploadFile, File, Request, Response, HTTPException, Depends
 
 from app.db.init import get_db
@@ -19,6 +20,7 @@ from app.models.schemas import RecipeCardStrict, to_strict_card
 router = APIRouter(prefix="/recipes", tags=["recipes"])
 
 
+#  helpers 
 def _to_card(doc: Dict[str, Any]) -> RecipeRecommendationOut:
     title = doc.get("title") or ""
     desc = doc.get("summary") or doc.get("description") or ""
@@ -56,6 +58,28 @@ def _to_card(doc: Dict[str, Any]) -> RecipeRecommendationOut:
         imageUrl=image,
         tags=[str(t) for t in tags] if tags else [],
     )
+
+
+PRICE_RE  = re.compile(r"[0-9][0-9,.\s]*\s*원")
+RATING_RE = re.compile(r"\b[0-5](?:\.\d)?\s*\(\d+\)")
+NOISE_WORDS = ("구매", "리뷰", "평점", "만개의레시피", "추천 레시피", "광고", "쇼핑", "쿠폰", "특가")
+
+def _drop_noise_lines(lines: list[str]) -> list[str]:
+    """가격/쇼핑/리뷰/평점류 제거 + 좌우 공백 정리. '풀 조리과정'이라 길이 제한 안 둠."""
+    out: list[str] = []
+    for s in lines or []:
+        s = str(s).strip()
+        if not s:
+            continue
+        if PRICE_RE.search(s) or RATING_RE.search(s) or any(w in s for w in NOISE_WORDS):
+            continue
+        # 앞 번호/불릿 제거 + 공백 정리
+        s = re.sub(r"^\s*(?:\d+[.)]\s*|[-•]\s*)", "", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        if s:
+            out.append(s)
+    return out
+# helpers end 
 
 
 async def _detect_tokens_from_bytes(imgs: List[bytes]) -> List[str]:
@@ -175,8 +199,7 @@ async def recommend_from_files(
     return [c.model_dump() for c in cards]
 
 
-# Cards 전용 서브라우터 (충돌 방지 고정) 
-
+# Cards 전용 서브라우터 
 cards = APIRouter(prefix="/cards", tags=["recipes"])
 
 def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
@@ -192,8 +215,7 @@ def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
         tags=(c.tags or []),
     )
 
-# 정적/특수 경로를 먼저 선언 
-
+# 정적/특수 경로를 먼저 선언
 @cards.get("/flat", response_model=List[RecipeRecommendationOut])
 async def list_cards_flat(limit: int = 30):
     db = get_db()
@@ -222,8 +244,8 @@ async def get_card_flat(card_id: str):
         d["variants"] = d["variants"][:1]
     return _strict_to_flat(to_strict_card(d)).model_dump()
 
-# 기본(스트릭트) 경로는 뒤에 선언
 
+# 기본(스트릭트) 경로는 뒤에 선언
 @cards.get("", response_model=List[RecipeCardStrict])
 async def list_cards(limit: int = 30):
     db = get_db()
@@ -250,6 +272,102 @@ async def get_card(card_id: str):
     if isinstance(d.get("variants"), list):
         d["variants"] = d["variants"][:1]
     return to_strict_card(d)
+
+
+# 풀 조리과정(full) 경로 추가
+@cards.get("/{card_id}/full")
+async def get_card_full(card_id: str):
+    
+    # 카드 id로 원본 recipes 문서에서 '풀 조리과정/재료'를 복구해서 반환.
+    # - steps_full: 전 단계(노이즈 제거만 하고, 길이 제한 없음)
+    # - ingredients_full: 원문 재료 리스트(있으면)
+    
+    db = get_db()
+    card = await db["recipe_cards"].find_one(
+        {"id": card_id},
+        {"_id": 0, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "source": 1}
+    )
+    if not card:
+        raise HTTPException(status_code=404, detail="card not found")
+
+    # 원본 recipe 찾기: url / link / source.url / source.href / recipe_id
+    url = ((card.get("source") or {}).get("url")) or ""
+    rid = ((card.get("source") or {}).get("recipe_id"))
+
+    r = None
+    if url:
+        r = await db["recipes"].find_one({
+            "$or": [
+                {"url": url},
+                {"link": url},
+                {"source.url": url},
+                {"source.href": url},
+            ]
+        })
+    if not r and rid:
+        r = await db["recipes"].find_one({"url": {"$regex": f"/recipe/{rid}$"}})
+    if not r:
+        # 제목으로라도 시도
+        r = await db["recipes"].find_one({"title": card.get("title")})
+
+    steps_full: list[str] = []
+    ingredients_full: list[str] = []
+
+    if r:
+        # helpers 재사용
+        def _list_from(d, keys: list[str] = []) -> list[str]:
+            if isinstance(d, dict):
+                for k in keys:
+                    v = d.get(k)
+                    if isinstance(v, list):
+                        return [str(x) for x in v if x]
+                    if isinstance(v, str) and v.strip():
+                        parts = re.split(r"\s*(?:\n|^\d+[)\.]|\r)+\s*", v)
+                        return [p.strip() for p in parts if p.strip()]
+            if isinstance(d, list):
+                return [str(x) for x in d if x]
+            if isinstance(d, str) and d.strip():
+                parts = re.split(r"\s*(?:\n|^\d+[)\.]|\r)+\s*", d)
+                return [p.strip() for p in parts if p.strip()]
+            return []
+
+        # steps
+        for k in ["steps", "directions", "instructions", "조리과정", "조리방법", "만드는법", "recipeSteps"]:
+            v = r.get(k)
+            if v:
+                steps_full = _list_from(v, [])
+                break
+        steps_full = _drop_noise_lines(steps_full)  # ★ 노이즈 제거만, 자르지 않음
+
+        # ingredients
+        ing = None
+        for entry in [
+            ("ingredients", ["list", "lines", "original"]),
+            "ingredients", "재료", "재료목록"
+        ]:
+            if isinstance(entry, tuple):
+                v = r.get(entry[0])
+                if v:
+                    ing = _list_from(v, entry[1])
+                    if ing:
+                        break
+            else:
+                v = r.get(entry)
+                if v:
+                    ing = _list_from(v, [])
+                    if ing:
+                        break
+        ingredients_full = [s for s in (ing or []) if s.strip()]
+
+    return {
+        "id": card["id"],
+        "title": card["title"],
+        "imageUrl": card.get("imageUrl"),
+        "tags": card.get("tags") or [],
+        "ingredients_full": ingredients_full,  # 전체 재료
+        "steps_full": steps_full,              # 전체 조리 과정
+        "source": card.get("source") or {},
+    }
 
 
 # 메인 라우터에 서브라우터 등록 (경로 충돌 방지)
