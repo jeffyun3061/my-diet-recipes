@@ -24,6 +24,7 @@ export default function BackgroundVideoWithControls() {
   const VIDEO_SRC_LIST = [
     "/videos/bg-saja.mp4",
     "/videos/bg-mv.mp4",
+    "/videos/bg-buddha.mp4",
     "/videos/bg-nature.mp4",
   ];
   const [currentVideoIndex, setCurrentVideoIndex] = useState(0);

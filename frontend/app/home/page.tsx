@@ -79,7 +79,9 @@ export default function HomePage() {
             }}
           >
             <Typography variant="caption" fontWeight={500}>
-              {personalInfo ? "개인정보 등록완료 ✓" : "개인정보 입력필요"}
+              {personalInfo
+                ? "다이어트 정보 등록완료 ✓"
+                : "다이어트 정보 입력필요"}
             </Typography>
           </Box>
         </CardContent>
