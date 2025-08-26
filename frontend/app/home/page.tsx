@@ -63,8 +63,10 @@ export default function HomePage() {
                 whiteSpace: "normal",
               }}
             >
-              샐러드 볼을 클릭하여 개인 정보를 입력하고, 가지고 있는 재료로
-              맞춤형 건강 레시피를 추천받으세요.
+              다이어트 정보를 입력하고, 가지고 있는 재료로 맞춤형 건강 레시피를
+              추천받으세요! <br />
+              <br />
+              👆샐러드 볼🥗을 클릭해보세요😋🌟
             </Typography>
           </Stack>
 
