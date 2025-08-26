@@ -6,6 +6,12 @@ import PauseIcon from "@mui/icons-material/Pause";
 import VolumeOffIcon from "@mui/icons-material/VolumeOff";
 import VolumeUpIcon from "@mui/icons-material/VolumeUp";
 import { useRef, useState, useEffect } from "react";
+import { Gaegu } from "next/font/google";
+
+const gamjaFlower = Gaegu({
+  weight: "400",
+  subsets: ["latin"],
+});
 
 export default function BackgroundVideoWithControls() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -15,8 +21,12 @@ export default function BackgroundVideoWithControls() {
   const [hasError, setHasError] = useState(false);
 
   const BG_PLACEHOLDER = "/images/bg-placeholder.jpg";
-  const VIDEO_SRC = "/videos/bg-saja.mp4";
-
+  const VIDEO_SRC_LIST = [
+    "/videos/bg-saja.mp4",
+    "/videos/bg-mv.mp4",
+    "/videos/bg-nature.mp4",
+  ];
+  const [currentVideoIndex, setCurrentVideoIndex] = useState(0);
   const MOBILE_WIDTH = 420;
   const [windowWidth, setWindowWidth] = useState(0);
 
@@ -73,6 +83,30 @@ export default function BackgroundVideoWithControls() {
     console.error("이미지 로드 실패:", e);
   };
 
+  const handleSelectVideo = (index: number) => {
+    if (index === currentVideoIndex) return;
+
+    setCurrentVideoIndex(index);
+    setPlaying(true);
+    setHasError(false);
+
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.src = VIDEO_SRC_LIST[index];
+      videoRef.current.muted = muted;
+
+      const handleLoadedData = () => {
+        videoRef.current
+          ?.play()
+          .catch((err) => console.error("비디오 재생 오류:", err));
+        videoRef.current?.removeEventListener("loadeddata", handleLoadedData);
+      };
+
+      videoRef.current.addEventListener("loadeddata", handleLoadedData);
+      videoRef.current.load();
+    }
+  };
+
   if (!mounted) return null;
 
   return (
@@ -93,7 +127,7 @@ export default function BackgroundVideoWithControls() {
         {/* 비디오 */}
         <video
           ref={videoRef}
-          src={VIDEO_SRC}
+          src={VIDEO_SRC_LIST[currentVideoIndex]}
           autoPlay
           loop
           muted={muted}
@@ -125,41 +159,15 @@ export default function BackgroundVideoWithControls() {
       </Box>
 
       {/* 왼쪽 텍스트 */}
-      {/* <Box
-        sx={{
-          // 배경 이미지가 보일 때만 flex로 표시, 아닐 때는 none
-          display: !playing || hasError ? "flex" : "none",
-          // flex 아이템(텍스트)을 수평/수직 중앙 정렬
-          alignItems: "center",
-          justifyContent: "center",
-          position: "fixed",
-          top: "10%",
-          left: 0,
-          // 계산된 왼쪽 영역의 너비를 적용 (음수 방지)
-          width: leftAreaWidth > 0 ? leftAreaWidth : 0,
-          transform: "translateY(-50%)",
-          color: "#fff",
-          zIndex: 1000,
-          // 텍스트 자체에 대한 스타일 (필요시 수정)
-          bgcolor: "rgba(255,255,255,0.3)",
-          padding: 2,
-          borderRadius: 2,
-        }}
-      >
-        <Typography variant="h6" component="div" sx={{ fontWeight: 700 }}>
-          MY DIET RECIPES
-        </Typography>
-        <Typography variant="h6" component="div" sx={{ fontWeight: 700 }}>
-          나의 다이어트 레시피
-        </Typography>
-        <Typography variant="h6" component="div" sx={{ fontWeight: 700 }}>
-          모두가 알 ✨다시피
-        </Typography>
-      </Box> */}
       <Box
         sx={{
           // 1. 바깥쪽 Box: 위치와 정렬을 담당하는 컨테이너
-          display: !playing || hasError ? "flex" : "none", // 보일 때 flex로 설정
+          display:
+            !playing || hasError
+              ? leftAreaWidth >= 330
+                ? "flex"
+                : "none"
+              : "none",
           alignItems: "center", // 자식(안쪽 Box)을 수직 중앙 정렬
           justifyContent: "center", // 자식(안쪽 Box)을 수평 중앙 정렬
           position: "fixed",
@@ -173,7 +181,7 @@ export default function BackgroundVideoWithControls() {
         {/* 2. 안쪽 Box: 실제 스타일(배경, 패딩 등)을 담당 */}
         <Box
           sx={{
-            bgcolor: "rgba(255,255,255,0.3)",
+            bgcolor: "rgba(255,255,255,0.2)",
             paddingX: 3, // 좌우 패딩
             paddingY: 1.5, // 상하 패딩
             borderRadius: 2,
@@ -181,27 +189,50 @@ export default function BackgroundVideoWithControls() {
             textAlign: "center",
           }}
         >
-          <Typography variant="h3" component="div" sx={{ fontWeight: 700 }}>
+          <Typography
+            variant="h2"
+            component="div"
+            sx={{
+              fontWeight: 700,
+              fontFamily: `${gamjaFlower.style.fontFamily} !important`,
+            }}
+          >
             MY DIET RECIPES
           </Typography>
-          <Typography variant="h4" component="div" sx={{ fontWeight: 700 }}>
+          <Typography
+            variant="h3"
+            component="div"
+            sx={{
+              fontWeight: 700,
+              fontFamily: `${gamjaFlower.style.fontFamily} !important`,
+            }}
+          >
             나의 다이어트 레시피
           </Typography>
           <br />
           <br />
           <Typography
-            variant="h5"
+            variant="h4"
             component="div"
-            sx={{ fontWeight: 700, textAlign: "left" }}
+            sx={{
+              fontWeight: 700,
+              textAlign: "left",
+              fontFamily: `${gamjaFlower.style.fontFamily} !important`,
+            }}
           >
             모두가 알 다시피
           </Typography>
           <br />
           <br />
           <Typography
-            variant="h3"
+            variant="h2"
             component="div"
-            sx={{ fontWeight: 700, whiteSpace: "nowrap", marginRight: 5 }}
+            sx={{
+              fontWeight: 700,
+              whiteSpace: "nowrap",
+              marginRight: 5,
+              fontFamily: `${gamjaFlower.style.fontFamily} !important`,
+            }}
           >
             ✨다시피
           </Typography>
@@ -231,6 +262,7 @@ export default function BackgroundVideoWithControls() {
           },
         }}
       >
+        {/* 재생/일시정지 버튼 */}
         <IconButton
           size="small"
           onClick={handlePlayPause}
@@ -249,6 +281,7 @@ export default function BackgroundVideoWithControls() {
           )}
         </IconButton>
 
+        {/* 음소거 버튼 */}
         {playing && !hasError && (
           <IconButton size="small" onClick={handleMute} sx={{ color: "#fff" }}>
             {muted ? (
@@ -257,6 +290,25 @@ export default function BackgroundVideoWithControls() {
               <VolumeUpIcon fontSize="small" />
             )}
           </IconButton>
+        )}
+
+        {/* 점 UI */}
+        {playing && !hasError && VIDEO_SRC_LIST.length > 1 && (
+          <Box sx={{ display: "flex", gap: 0.5, ml: 1 }}>
+            {VIDEO_SRC_LIST.map((_, idx) => (
+              <Box
+                key={idx}
+                onClick={() => handleSelectVideo(idx)}
+                sx={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  bgcolor: idx === currentVideoIndex ? "#fff" : "#888",
+                  cursor: "pointer",
+                }}
+              />
+            ))}
+          </Box>
         )}
       </Box>
     </>
