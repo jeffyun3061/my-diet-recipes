@@ -37,3 +37,8 @@ body {
 .page-content {
   flex: 1 1 auto;
 }
+
+img {
+  -webkit-user-drag: none; /* 크롬/사파리 */
+  user-select: none; /* 표준 */
+}
