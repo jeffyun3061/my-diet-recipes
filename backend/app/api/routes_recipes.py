@@ -4,6 +4,7 @@
 from __future__ import annotations
 from typing import List, Dict, Any, Optional
 import re
+import logging
 from fastapi import APIRouter, UploadFile, File, Request, Response, HTTPException, Depends
 
 from bson import ObjectId
@@ -15,9 +16,10 @@ from app.services.crawl10000.recommender import hybrid_recommend
 from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
 from app.services.crawl10000.seed_ing import normalize_ingredients_ko
 
-
 # 카드 스키마 (표시용 3~4 태그/요약/단계 컷)
 from app.models.schemas import RecipeCardStrict, to_strict_card
+
+log = logging.getLogger(__name__)
 
 # 메인 라우터
 router = APIRouter(prefix="/recipes", tags=["recipes"])
@@ -161,8 +163,28 @@ async def _find_source_recipe(card: Dict[str, Any], db) -> Optional[Dict[str, An
     return r
 
 # ------------------------------
-# Vision → 재료 토큰화 → 추천
+# 업로드 수집 / Vision / 추천
 # ------------------------------
+
+async def _collect_uploads(request: Request) -> List[bytes]:
+    """
+    - image_0..image_8 필드 또는
+    - files=[UploadFile,...] 배열
+    모두 지원. 이미지 MIME만 통과.
+    """
+    imgs: List[bytes] = []
+    try:
+        form = await request.form()
+    except Exception:
+        form = None
+
+    if form:
+        for k, v in form.multi_items():
+            if isinstance(v, UploadFile):
+                if v.content_type in ("image/jpeg", "image/png", "image/webp"):
+                    imgs.append(await v.read())
+        # 혹시 바디가 없고 쿼리/바이너리로 들어오는 경우 대비: 무시
+    return imgs
 
 async def _detect_tokens_from_bytes(imgs: List[bytes]) -> tuple[List[str], List[str]]:
     try:
@@ -170,17 +192,18 @@ async def _detect_tokens_from_bytes(imgs: List[bytes]) -> tuple[List[str], List[
     except VisionNotReady as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"vision error: {e}")
+        raise HTTPException(status_code=503, detail=f"vision_error: {e}")
 
     raw_names = [x.get("name", "") for x in items if isinstance(x, dict)]
     raw_names = [n for n in raw_names if n]
-    tokens = normalize_ingredients_ko(raw)
+    # 오타 수정: raw → raw_names
+    tokens = normalize_ingredients_ko(raw_names)
     return tokens, raw_names
 
 async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
     db = get_db()
-    user_diet = ""  # TODO: "lowcarb" 등 내부 태그 문자열 매핑 시 가점(+0.05)
-    cards = await hybrid_recommend(db["recipes"], tokens, user_diet=user_diet, top_k=24)
+    user_diet = ""  # TODO: "lowcarb" 등 내부 태그 문자열 매핑 시 가점
+    cards = await hybrid_recommend(db["recipes"], tokens, user_diet=user_diet, top_k=30)
 
     out: List[RecipeRecommendationOut] = []
     for c in cards:
@@ -203,88 +226,64 @@ async def _search_recipes(tokens: List[str]) -> List[RecipeRecommendationOut]:
         )
     return out
 
-@router.post("/recommend", response_model=List[RecipeRecommendationOut])
-async def recommend_from_images(
-    req: Request,
-    res: Response,
-    anon_id: str = Depends(get_or_set_anon_id),   # 쿠키 보장
-    image_0: UploadFile = File(...),
-    image_1: UploadFile | None = File(None),
-    image_2: UploadFile | None = File(None),
-    image_3: UploadFile | None = File(None),
-    image_4: UploadFile | None = File(None),
-    image_5: UploadFile | None = File(None),
-    image_6: UploadFile | None = File(None),
-    image_7: UploadFile | None = File(None),
-    image_8: UploadFile | None = File(None),
-):
-    files = [f for f in [image_0, image_1, image_2, image_3, image_4, image_5, image_6, image_7, image_8] if f]
+# ------------------------------
+# 추천 코어 + 안전 직렬화
+# ------------------------------
 
-    imgs: List[bytes] = []
-    for f in files:
-        if f.content_type not in ("image/jpeg", "image/png", "image/webp"):
-            raise HTTPException(status_code=415, detail="지원하지 않는 이미지 형식입니다.")
-        imgs.append(await f.read())
+def _to_dict(x: Any) -> Any:
+    # pydantic v2/v1 모두 지원
+    try:
+        return x.model_dump()    # v2
+    except Exception:
+        try:
+            return x.dict()      # v1
+        except Exception:
+            return x
 
-    if not imgs:
-        raise HTTPException(status_code=400, detail="이미지가 필요합니다.")
+async def _recommend_core(request: Request, db) -> List[RecipeRecommendationOut]:
+    files = await _collect_uploads(request)
+    if not files:
+        raise HTTPException(status_code=400, detail="이미지 파일이 없습니다.")
 
-    tokens, raw = await _detect_tokens_from_bytes(imgs)
-    # 추출 실패 시 422로 명확히 에러 반환
+    try:
+        # Vision → 원재료명
+        items = await extract_ingredients_from_images(files)
+    except VisionNotReady as e:
+        log.warning("VisionNotReady: %s", e)
+        items = []
+    except Exception as e:
+        log.exception("Vision error")
+        raise HTTPException(status_code=500, detail=f"vision_error: {e}")
+
+    raw = [x.get("name", "") for x in items if isinstance(x, dict) and x.get("name")]
+    tokens = normalize_ingredients_ko(raw)
+    log.info("recommend raw=%s -> tokens=%s (n_images=%d)", raw, tokens, len(files))
+
     if not tokens:
         raise HTTPException(
             status_code=422,
-            detail={"msg": "이미지에서 핵심 재료를 찾지 못했습니다.", "debug": {"raw": raw[:8], "images": len(imgs)}}
+            detail={"msg": "이미지에서 핵심 재료를 찾지 못했습니다.", "debug": {"raw": raw, "images": len(files)}},
         )
 
-    cards = await _search_recipes(tokens)
+    try:
+        return await _search_recipes(tokens)
+    except Exception as e:
+        log.exception("hybrid_recommend failed")
+        raise HTTPException(status_code=500, detail=f"recommend_error: {e}")
 
-    # 추천 이력 저장(옵션)
-    db = get_db()
-    await db["recommendations"].insert_one({
-        "anon_id": anon_id,
-        "used": {"tokens": tokens, "raw": raw[:8], "n_images": len(imgs)},
-        "result_ids": [c.id for c in cards],
-        "created_at": __import__("datetime").datetime.utcnow(),
-    })
+# ------------------------------
+# 엔드포인트: 추천
+# ------------------------------
 
-    return [c.model_dump() for c in cards]
+@router.post("/recommend")  # response_model 제거
+async def recommend(request: Request, db=Depends(get_db), _: str = Depends(get_or_set_anon_id)):
+    items = await _recommend_core(request, db)
+    return [_to_dict(it) for it in items]
 
-@router.post("/recommend/files", response_model=List[RecipeRecommendationOut])
-async def recommend_from_files(
-    req: Request,
-    res: Response,
-    anon_id: str = Depends(get_or_set_anon_id),
-    files: List[UploadFile] = File(..., description="이미지 파일들 (여러 장 가능)"),
-):
-    valid_files = [f for f in files if f and f.filename]
-    imgs: List[bytes] = []
-    for f in valid_files:
-        if f.content_type not in ("image/jpeg", "image/png", "image/webp"):
-            raise HTTPException(status_code=415, detail="지원하지 않는 이미지 형식입니다.")
-        imgs.append(await f.read())
-
-    if not imgs:
-        raise HTTPException(status_code=400, detail="이미지가 필요합니다.")
-
-    tokens, raw = await _detect_tokens_from_bytes(imgs)
-    if not tokens:
-        raise HTTPException(
-            status_code=422,
-            detail={"msg": "이미지에서 핵심 재료를 찾지 못했습니다.", "debug": {"raw": raw[:8], "images": len(imgs)}}
-        )
-
-    cards = await _search_recipes(tokens)
-
-    db = get_db()
-    await db["recommendations"].insert_one({
-        "anon_id": anon_id,
-        "used": {"tokens": tokens, "raw": raw[:8], "n_images": len(imgs)},
-        "result_ids": [c.id for c in cards],
-        "created_at": __import__("datetime").datetime.utcnow(),
-    })
-
-    return [c.model_dump() for c in cards]
+@router.post("/recommend/files")  # response_model 제거
+async def recommend_files(request: Request, db=Depends(get_db), _: str = Depends(get_or_set_anon_id)):
+    items = await _recommend_core(request, db)
+    return [_to_dict(it) for it in items]
 
 # ------------------------------
 # Cards 전용 서브라우터
