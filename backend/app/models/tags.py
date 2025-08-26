@@ -50,7 +50,7 @@ _CANON_SYNONYMS = {
     # 감자
     "감자":"감자","potato":"감자","potatoes":"감자",
     # 고구마
-    "고구마":"고구마","sweet potato":"고구마","sweet":"고구마",
+    "고구마":"고구마","sweet potato":"고구마",
     # 양파/당근/토마토
     "양파":"양파","onion":"양파","onions":"양파",
     "당근":"당근","carrot":"당근","carrots":"당근",

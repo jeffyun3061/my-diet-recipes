@@ -1,6 +1,6 @@
 # app/services/vision_openai.py
 # 사진에서 재료 추출 (OpenAI Vision)
-# - Responses API(신) 우선 사용, 미지원/버전 차이 시 Chat Completions(구)로 폴백
+# - Chat Completions만 사용 (Responses API 경로 제거)
 # - JSON 파싱은 최대한 안전하게
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ def _b64(b: bytes) -> str:
     return base64.b64encode(b).decode("ascii")
 
 
-# JSON 스키마(권고)
+# JSON 스키마(권고용 설명)
 ING_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -68,8 +68,8 @@ PROMPT = (
     "- 스키마: { ingredients: [{ name: string, amount?: string, confidence?: number }] }\n"
     "- 양이 보이면 amount에 적고, 불확실하면 '~1개'처럼 표기하세요.\n"
     "- name만으로도 재료를 유추할 수 있게 일반명/대표명 사용(브랜드X).\n"
+    "- 감자/고구마/무/비트 등 비슷한 뿌리채소는 혼동하지 마세요. 모호하면 confidence를 낮게 두세요.\n"
 )
-
 
 async def extract_ingredients_from_files(files: List[UploadFile]) -> List[str]:
     # 업로드 파일(List[UploadFile]) → 바이트 읽기 → Vision → 이름 리스트(중복 제거/정렬)
@@ -101,77 +101,29 @@ async def extract_ingredients_from_files(files: List[UploadFile]) -> List[str]:
 
 
 async def extract_ingredients_from_images(images: List[bytes]) -> List[Dict[str, Any]]:
-    # 이미지 바이트 배열 → [{'name': str, 'amount': str?, 'confidence': float?}, ...]
-    # Responses API(신) + json_schema 사용 시도
-    # 미지원/오류면 Chat Completions로 폴백
-
+    """
+    이미지 바이트 배열 → [{'name': str, 'amount': str?, 'confidence': float?}, ...]
+    - OpenAI Chat Completions(gpt-4o) + data URL 만 사용
+    - JSON만 수신(response_format=json_object)
+    """
     client = _client()
 
-    # 1) Responses API 시도
+    content: List[Dict[str, Any]] = [{"type": "text", "text": PROMPT}]
+    for b in images:
+        # MIME은 대부분 jpeg로 취급, png/webp도 문제 없음
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{_b64(b)}"},
+        })
+
     try:
-        # content 파트 구성: input_text + input_image
-        parts: List[Dict[str, Any]] = [{"type": "input_text", "text": PROMPT}]
-        for b in images:
-            parts.append(
-                {
-                    "type": "input_image",
-                    "image_data": {"data": _b64(b), "mime_type": "image/jpeg"},
-                }
-            )
-
-        kwargs: Dict[str, Any] = dict(
-            model="gpt-4o-mini",
-            input=[{"role": "user", "content": parts}],
-            max_output_tokens=400,
-            temperature=0.1,
-        )
-
-        # 일부 구버전 SDK는 response_format 미지원 → 넣고 실패 시 빼고 재시도
-        try:
-            rsp = client.responses.create(
-                **kwargs,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {"name": "ingredients", "schema": ING_SCHEMA},
-                },
-            )
-        except TypeError:
-            # response_format 인자를 모르는 버전 → 없이 한 번 더
-            rsp = client.responses.create(**kwargs)
-
-        text = _extract_text_safe(rsp)
-        if not text:
-            log.warning("Responses API returned empty text")
-            return []
-
-        try:
-            obj = json.loads(text)
-        except json.JSONDecodeError:
-            log.warning("Responses API returned non-JSON content trimmed; ignoring")
-            return []
-
-        items = obj.get("ingredients", [])
-        return [it for it in items if isinstance(it, dict)]
-
-    except Exception as e:
-        log.exception("Responses API path failed: %s", e)
-
-    # 2) Chat Completions로 폴백
-    try:
-        content = [{"type": "text", "text": PROMPT}]
-        for b in images:
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{_b64(b)}"},
-                }
-            )
         chat = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4o",
             temperature=0.1,
             messages=[{"role": "user", "content": content}],
-            # chat.completions는 json_schema 미지원 → 강한 지시어로 대체
+            # Chat Completions는 json_schema 미지원 → JSON만 받도록 강제
             response_format={"type": "json_object"},
+            max_tokens=400,
         )
 
         text = chat.choices[0].message.content if chat and chat.choices else ""
@@ -189,23 +141,22 @@ async def extract_ingredients_from_images(images: List[bytes]) -> List[Dict[str,
         return [it for it in items if isinstance(it, dict)]
 
     except Exception as e:
-        log.exception("Chat Completions fallback failed: %s", e)
+        log.exception("Vision chat completion failed: %s", e)
         return []
 
 
 def _extract_text_safe(rsp: Any) -> str | None:
-    # OpenAI Responses SDK의 리턴 구조가 버전에 따라 달라서 가능한 경로를 순서대로 시도.
-    # 1) 직렬화된 필드
+    """
+    (과거 Responses API 호환 유틸) — 현재는 사용하지 않음. 보존만.
+    """
     try:
         return rsp.output[0].content[0].text  # type: ignore[attr-defined]
     except Exception:
         pass
-    # 2) helper
     try:
         return rsp.output_text  # type: ignore[attr-defined]
     except Exception:
         pass
-    # 3) dict로 풀어서
     try:
         d = rsp.model_dump() if hasattr(rsp, "model_dump") else rsp
         out = d.get("output") or d.get("outputs") or []
