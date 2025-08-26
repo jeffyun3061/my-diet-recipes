@@ -28,7 +28,7 @@ const isObjId = (v: unknown) =>
   typeof v === "string" && /^[a-f0-9]{24}$/i.test(v.trim());
 
 export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
-  // /full 결과만 상태로 들고, 없는 경우에는 프리뷰로 폴백
+  // /recipes/cards/{id}/full 로 받아오는 전체 정보
   const [full, setFull] = useState<RecipeFull | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -44,8 +44,9 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
       }
       const rid = String(recipe.id);
       if (!isObjId(rid)) {
+        // 외부/크롤 원본 등 ObjectId가 아닌 케이스는 프리뷰만 사용
         setFull(null);
-        setErr(null); // 폴백으로만 표시
+        setErr(null);
         return;
       }
 
@@ -71,7 +72,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
 
   if (!recipe) return null;
 
-  // 헤더 영역(제목/이미지/태그)은 풀데이터 우선, 없으면 목록 값으로 폴백
+  // 헤더: full 우선, 없으면 목록 프리뷰 폴백
   const title = full?.title ?? recipe.title ?? "";
   const imageUrl =
     (full?.imageUrl && String(full.imageUrl)) ||
@@ -79,11 +80,11 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
     "/images/recipe-placeholder.jpg";
   const tags = (full?.tags?.length ? full.tags : recipe.tags) || [];
 
-  // 본문: 풀데이터 우선, 비면 프리뷰 steps/ingredients 사용
+  // 본문: full 우선, 없으면 프리뷰(목록) 사용
   const ingredients =
-    full?.ingredients_full?.length ? full.ingredients_full : recipe.ingredients || [];
+    (full?.ingredients_full?.length ? full.ingredients_full : recipe.ingredients) || [];
   const steps =
-    full?.steps_full?.length ? full.steps_full : recipe.steps || [];
+    (full?.steps_full?.length ? full.steps_full : recipe.steps) || [];
 
   return (
     <Dialog
@@ -154,7 +155,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
             </Box>
           )}
 
-          {/* 에러 메시지 (프리뷰 폴백은 정상 동작하므로 안내만) */}
+          {/* 에러 (프리뷰 폴백은 계속 동작하므로 안내만) */}
           {err && (
             <Typography variant="body2" color="error" sx={{ mb: 2 }}>
               {err}
@@ -190,7 +191,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
           <Stack spacing={2} sx={{ maxHeight: 320, overflow: "auto", pr: 1 }}>
             {steps.length ? (
               steps.map((step, index) => (
-                <Box key={`${index}-${step.slice(0, 12)}`} sx={{ display: "flex", gap: 2 }}>
+                <Box key={`${index}-${String(step).slice(0, 12)}`} sx={{ display: "flex", gap: 2 }}>
                   <Box
                     sx={{
                       minWidth: 28,

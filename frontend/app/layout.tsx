@@ -7,6 +7,7 @@ import ThemeRegistry from "@/components/ThemeRegistry";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import { Box } from "@mui/material";
+import BackgroundVideoWithControls from "@/components/BackgroundVideoWithControls";
 
 export const metadata: Metadata = {
   title: "My Mobile Web",
@@ -22,6 +23,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <ThemeRegistry>
           <CssBaseline />
+          <BackgroundVideoWithControls />
 
           {/* 메인 컨테이너 - 중앙 정렬 */}
           <Box

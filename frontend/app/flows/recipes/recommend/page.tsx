@@ -9,7 +9,6 @@ import type { Route } from "next";
 import type { RecipeRecommendation } from "@/types/image";
 import RecipeCarousel from "@/components/recipe/RecipeCarousel";
 import RecipeDetailModal from "@/components/recipe/RecipeDetailModal";
-import { fetchCardsFlat } from "@/lib/api"; // 카드 상세
 
 export default function RecipeRecommendPage() {
   const [recommendations, setRecommendations] = useState<
@@ -21,27 +20,13 @@ export default function RecipeRecommendPage() {
   const router = useRouter();
 
   useEffect(() => {
-  const stored = sessionStorage.getItem("recipeRecommendations");
-  if (stored) {
-    try {
+    const stored = sessionStorage.getItem("recipeRecommendations");
+    if (stored) {
       setRecommendations(JSON.parse(stored));
-    } catch {
-      loadFallback();
+    } else {
+      router.push("/recipes" as Route);
     }
-  } else {
-    loadFallback();
-  }
-
-  async function loadFallback() {
-    try {
-      const baseCards = await fetchCardsFlat(24); // /recipes/cards/flat
-      setRecommendations(baseCards);
-    } catch (e) {
-      console.error(e);
-    }
-  }
-}, []); // router 의존성 제거
-
+  }, [router]);
 
   const handleCardClick = (recipe: RecipeRecommendation) => {
     setSelectedRecipe(recipe);
