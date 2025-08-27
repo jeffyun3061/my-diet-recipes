@@ -319,19 +319,24 @@ export type RecipeFull = {
 };
 
 export async function fetchCardFull(id: string): Promise<RecipeFull> {
-  const url = `${API}/recipes/cards/${encodeURIComponent(id)}/full`;
-  let res: Response;
+  const tryFetch = async (url: string) => {
+    const res = await fetch(url, { cache: "no-store", credentials: "include" });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`${res.status}: ${body || res.statusText}`);
+    }
+    return res.json();
+  };
+
+  // 1순위: recipe_cards._id 기준 풀데이터
   try {
-    res = await fetch(url, { cache: "no-store" });
-  } catch (e: any) {
-    throw new Error(`상세 요청 실패(Fetch): ${e?.message || e}`);
+    return await tryFetch(`${API}/recipes/cards/${encodeURIComponent(id)}/full`);
+  } catch (_) {
+    // 2순위: 레거시/폴백 (여기도 풀데이터 반환하도록 서버가 정리돼 있음)
+    return await tryFetch(`${API}/recipes/${encodeURIComponent(id)}`);
   }
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`상세 요청 ${res.status}: ${body || res.statusText}`);
-  }
-  return res.json();
 }
+
 
 // // 테스트용 Mock API - 업로드된 이미지를 사용한 다양한 레시피
 // export const mockRecommendRecipes = async (

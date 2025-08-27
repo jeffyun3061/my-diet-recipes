@@ -24,9 +24,6 @@ interface Props {
   onClose: () => void;
 }
 
-const isObjId = (v: unknown) =>
-  typeof v === "string" && /^[a-f0-9]{24}$/i.test(v.trim());
-
 export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
   // /recipes/cards/{id}/full 로 받아오는 전체 정보
   const [full, setFull] = useState<RecipeFull | null>(null);
@@ -43,12 +40,6 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
         return;
       }
       const rid = String(recipe.id);
-      if (!isObjId(rid)) {
-        // 외부/크롤 원본 등 ObjectId가 아닌 케이스는 프리뷰만 사용
-        setFull(null);
-        setErr(null);
-        return;
-      }
 
       setLoading(true);
       setErr(null);
