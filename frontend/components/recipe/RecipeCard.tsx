@@ -26,6 +26,17 @@ export default function RecipeCard({ recipe, onClick }: Props) {
       ? ((recipe as any).steps as string[]).slice(0, 3)
       : [];
 
+  // 설명 전처리: 앞 숫자목록 제거 + 줄바꿈 → 공백
+  //   - "1. ..." / "1) ..." / "1 - ..." 같은 케이스도 처리
+  const cleanedDesc = React.useMemo(() => {
+    if (typeof (recipe as any).description !== "string") return "";
+    return ((recipe as any).description as string)
+      .replace(/^[\s]*\d+[.)-]?\s*/u, "") // 앞부분 숫자+구두점 제거
+      .replace(/\n+/g, " ")               // 줄바꿈 → 공백
+      .replace(/\s{2,}/g, " ")            // 이중 공백 정리
+      .trim();
+  }, [(recipe as any).description]);
+
   return (
     <Card
       sx={{
@@ -98,7 +109,7 @@ export default function RecipeCard({ recipe, onClick }: Props) {
           {recipe.title}
         </Typography>
 
-        {/* 설명 2줄 컷 유지 */}
+        {/* 설명 2줄 컷 유지 + 전처리 텍스트 사용 */}
         <Typography
           variant="body2"
           color="text.secondary"
@@ -113,7 +124,7 @@ export default function RecipeCard({ recipe, onClick }: Props) {
             mb: previewSteps.length ? 0.75 : 0, // steps가 있으면 살짝 간격
           }}
         >
-          {recipe.description}
+          {cleanedDesc}
         </Typography>
 
         {/* 조리 단계 미리보기(최대 3줄) — 리스트 카드에서만 */}

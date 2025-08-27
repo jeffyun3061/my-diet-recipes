@@ -35,7 +35,6 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
 
   useEffect(() => {
     let alive = true;
-
     async function load() {
       // 닫힐 때나 recipe가 없으면 초기화
       if (!open || !recipe?.id) {
@@ -45,17 +44,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
         }
         return;
       }
-
       const rid = String(recipe.id);
-
-      // 외부/크롤 원본 등 ObjectId가 아닌 케이스는 서버 상세 호출 생략(요약만 사용)
-      if (!isObjId(rid)) {
-        if (alive) {
-          setFull(null);
-          setErr(null);
-        }
-        return;
-      }
 
       setLoading(true);
       setErr(null);

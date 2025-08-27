@@ -8,6 +8,7 @@ import logging
 
 from fastapi import APIRouter, UploadFile, Request, HTTPException, Depends, Path
 from bson import ObjectId
+from fastapi import HTTPException
 
 from app.db.init import get_db
 from app.core.deps import get_or_set_anon_id
@@ -418,6 +419,41 @@ async def get_card_full_modal(
         limit_ingredients=None,
         limit_steps=None,
     )
+
+# /recipes/{recipe_id} GET
+@router.get("/recipes/{rid}", response_model=RecipeRecommendationOut)
+async def get_recipe(rid: str):
+    db = get_db()
+
+    # 1) _id 시도
+    doc = None
+    try:
+        doc = await db["recipes"].find_one({"_id": ObjectId(rid)})
+    except Exception:
+        pass
+
+    # 2) 외부 id 시도
+    if not doc:
+        doc = await db["recipes"].find_one({"id": rid})
+
+    # 3) source 기반 시도 (필드명이 다르면 맞춰 바꾸세요)
+    if not doc:
+        doc = await db["recipes"].find_one({"source.id": rid}) \
+           or await db["recipes"].find_one({"source.url": rid})
+
+    if not doc:
+        raise HTTPException(404, "recipe not found")
+
+    # ✱ 모달: 슬라이스 없이 전체 반환
+    return {
+        "id": str(doc.get("_id") or doc.get("id")),
+        "title": doc.get("title",""),
+        "description": doc.get("description") or doc.get("desc") or "",
+        "imageUrl": doc.get("imageUrl") or doc.get("thumbnail"),
+        "tags": doc.get("tags") or [],
+        "ingredients": doc.get("ingredients") or [],
+        "steps": doc.get("steps") or [],
+    }
 
 # ------------------------------
 # Cards 전용 서브라우터
