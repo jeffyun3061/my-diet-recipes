@@ -19,7 +19,7 @@ import { fetchCardFull } from "@/lib/api";
 import type { RecipeFull } from "@/lib/api";
 
 interface Props {
-  recipe: RecipeRecommendation | null;
+  recipe: RecipeRecommendation | null; // 목록에서 넘어온 요약 카드
   open: boolean;
   onClose: () => void;
 }
@@ -28,7 +28,7 @@ const isObjId = (v: unknown) =>
   typeof v === "string" && /^[a-f0-9]{24}$/i.test(v.trim());
 
 export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
-  // /recipes/cards/{id}/full 로 받아오는 전체 정보
+  // /recipes/card/{id} 에서 받아오는 "풀 데이터"
   const [full, setFull] = useState<RecipeFull | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -37,16 +37,23 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
     let alive = true;
 
     async function load() {
+      // 닫힐 때나 recipe가 없으면 초기화
       if (!open || !recipe?.id) {
-        setFull(null);
-        setErr(null);
+        if (alive) {
+          setFull(null);
+          setErr(null);
+        }
         return;
       }
+
       const rid = String(recipe.id);
+
+      // 외부/크롤 원본 등 ObjectId가 아닌 케이스는 서버 상세 호출 생략(요약만 사용)
       if (!isObjId(rid)) {
-        // 외부/크롤 원본 등 ObjectId가 아닌 케이스는 프리뷰만 사용
-        setFull(null);
-        setErr(null);
+        if (alive) {
+          setFull(null);
+          setErr(null);
+        }
         return;
       }
 
@@ -55,7 +62,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
       try {
         const data = await fetchCardFull(rid);
         if (!alive) return;
-        setFull(data);
+        setFull(data || null);
       } catch (e: any) {
         if (!alive) return;
         setErr(e?.message || "상세 불러오기 실패");
@@ -72,7 +79,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
 
   if (!recipe) return null;
 
-  // 헤더: full 우선, 없으면 목록 프리뷰 폴백
+  // 헤더: 풀데이터 우선, 없으면 목록 프리뷰 폴백
   const title = full?.title ?? recipe.title ?? "";
   const imageUrl =
     (full?.imageUrl && String(full.imageUrl)) ||
@@ -80,7 +87,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
     "/images/recipe-placeholder.jpg";
   const tags = (full?.tags?.length ? full.tags : recipe.tags) || [];
 
-  // 본문: full 우선, 없으면 프리뷰(목록) 사용
+  // 본문: 풀데이터 우선, 없으면 목록 프리뷰
   const ingredients =
     (full?.ingredients_full?.length ? full.ingredients_full : recipe.ingredients) || [];
   const steps =
@@ -155,14 +162,14 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
             </Box>
           )}
 
-          {/* 에러 (프리뷰 폴백은 계속 동작하므로 안내만) */}
+          {/* 에러 안내(프리뷰 폴백은 계속 동작) */}
           {err && (
             <Typography variant="body2" color="error" sx={{ mb: 2 }}>
               {err}
             </Typography>
           )}
 
-          {/* 재료 */}
+          {/* 재료: 모달에서는 slice 제거(전체) */}
           <Typography variant="h6" fontWeight={600} gutterBottom>
             재료{full?.ingredients_full?.length ? " (전체)" : ""}
           </Typography>
@@ -184,7 +191,7 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
             )}
           </Box>
 
-          {/* 조리 과정 */}
+          {/* 조리 과정: 모달에서는 slice 제거(전체) */}
           <Typography variant="h6" fontWeight={600} gutterBottom>
             조리 과정{full?.steps_full?.length ? " (전체)" : ""}
           </Typography>

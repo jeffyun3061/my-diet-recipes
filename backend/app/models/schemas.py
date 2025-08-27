@@ -15,12 +15,14 @@ except ImportError:  # v1
     from pydantic import validator
 
 from app.models.tags import (
-    CANON,                     # ★ 추가: 주재료 사전
+    CANON,                     # ★ 주재료 사전
     build_display_tags,
     MAX_SUMMARY, MAX_STEP_LINES, MAX_STEP_TEXT, MAX_TAGS
 )
 
+# --------------------------------
 # 공통 유틸
+# --------------------------------
 def _clip_text(s: str, limit: int) -> str:
     s = (s or "").strip().replace("\n", " ")
     return s if len(s) <= limit else s[:limit].rstrip() + "…"
@@ -44,13 +46,22 @@ def _fallback_steps(summary: str, title: str) -> List[str]:
         out = ["재료 준비", "중약불로 조리", "접시에 담기"]
     return out[:3]
 
-# 풀 카드(원본 저장용)
+def _sanitize_step(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"^\s*[\d\-\(\)\.]+[)\.]?\s*", "", s)                  # 앞 번호/불릿 제거
+    s = re.sub(r"\s+\d{1,3}(,?\d{3})*원.*$", "", s)                   # 가격 줄 자르기
+    s = re.sub(r"(구매|리뷰|평점|만개의레시피).*$", "", s)            # 쇼핑/리뷰 노이즈 제거
+    return s.strip()
+
+# --------------------------------
+# 원본(저장용) 카드 스키마
+# --------------------------------
 class RecipeVariantCard(BaseModel):
     name: str
-    key_ingredients: List[str] = Field(default_factory=list, min_items=0, max_items=3)
+    key_ingredients: List[str] = Field(default_factory=list)   # 개수 제한은 변환기에서
     summary: str = ""
-    steps_compact: List[str] = Field(default_factory=list)   # 3줄 권장
-    tags: List[str] = Field(default_factory=list)            # 3~4개
+    steps_compact: List[str] = Field(default_factory=list)     # 3줄 권장(변환기에서 컷)
+    tags: List[str] = Field(default_factory=list)              # 3~4개 권장(표시용 빌더로 정제)
 
     @validator("summary", pre=True, always=True)
     def _v_clip_summary(cls, v):
@@ -58,8 +69,9 @@ class RecipeVariantCard(BaseModel):
 
     @validator("steps_compact", pre=True, always=True)
     def _v_clip_steps(cls, v):
-        v = [ _clip_text(s, MAX_STEP_TEXT) for s in (v or []) ]
-        return v[:MAX_STEP_LINES]  # 3단계만
+        v = [_clip_text(s, MAX_STEP_TEXT) for s in (v or [])]
+        # 저장시 강제 3줄은 하지 않음; 표시 시 변환기에서 처리
+        return v[:MAX_STEP_LINES] if v else v
 
     @validator("tags", pre=True, always=True)
     def _v_norm_tags(cls, v):
@@ -70,7 +82,7 @@ class RecipeCard(BaseModel):
     id: str
     title: str
     subtitle: str
-    tags: List[str] = Field(default_factory=list)            # 상단 3~4개
+    tags: List[str] = Field(default_factory=list)            # 상단 3~4개(표시용 정제)
     variants: List[RecipeVariantCard]
     source: Optional[dict] = None                            # {"site","url","recipe_id"}
     imageUrl: Optional[str] = None                           # 썸네일
@@ -80,23 +92,20 @@ class RecipeCard(BaseModel):
         base = list(dict.fromkeys(v or []))
         return build_display_tags(base, MAX_TAGS)
 
-# 카드 전용 "스트릭트" 뷰(분량 강제)
-MAX_STRICT_SUMMARY = 90     # 요약 최대 길이
-MAX_STRICT_STEPS   = 3      # 스텝 3 고정
-MAX_STRICT_CHIPS   = 3      # 칩 3 고정
-
-def _sanitize_step(s: str) -> str:
-    s = (s or "").strip()
-    s = re.sub(r"^\s*[\d\-\(\)\.]+[)\.]?\s*", "", s)                  # 앞 번호/불릿 제거
-    s = re.sub(r"\s+\d{1,3}(,?\d{3})*원.*$", "", s)                   # 가격 줄 자르기
-    s = re.sub(r"(구매|리뷰|평점|만개의레시피).*$", "", s)            # 쇼핑/리뷰 노이즈 제거
-    return s.strip()
+# --------------------------------
+# 리스트/모달 출력용 "스트릭트" 뷰
+#  - 모델에서는 개수 제한을 제거(유연성)
+#  - 개수/길이 컷은 변환기(to_strict_card)에서 옵션으로 제어
+# --------------------------------
+MAX_STRICT_SUMMARY = 90     # 요약 최대 길이(표시용)
+MAX_STRICT_STEPS   = 3      # 기본 스텝 개수(리스트용 기본값)
+MAX_STRICT_CHIPS   = 3      # 기본 칩 개수(리스트용 기본값)
 
 class RecipeVariantStrict(BaseModel):
     name: str = "기본"
-    key_ingredients: List[str] = Field(default_factory=list, max_items=MAX_STRICT_CHIPS)
+    key_ingredients: List[str] = Field(default_factory=list)  # 개수 제한 없음(변환기에서 슬라이스)
     summary: str = ""
-    steps: List[str] = Field(default_factory=list, max_items=MAX_STRICT_STEPS)
+    steps: List[str] = Field(default_factory=list)            # 개수 제한 없음(변환기에서 슬라이스)
 
     @validator("summary", pre=True, always=True)
     def _v_sum(cls, v):
@@ -104,8 +113,10 @@ class RecipeVariantStrict(BaseModel):
 
     @validator("steps", pre=True, always=True)
     def _v_steps(cls, v):
-        import re
-        block = re.compile(r"(?:[0-9]{1,3}(?:[,]\d{3})*\s*원|\b[0-5](?:\.\d)?\s*\(\d+\)|구매|리뷰|평점|추천\s*레시피|광고|쇼핑|쿠폰|특가)")
+        block = re.compile(
+            r"(?:[0-9]{1,3}(?:[,]\d{3})*\s*원|\b[0-5](?:\.\d)?\s*\(\d+\)|"
+            r"구매|리뷰|평점|추천\s*레시피|광고|쇼핑|쿠폰|특가)"
+        )
         out = []
         for x in (v or []):
             s = (x or "").strip()
@@ -114,42 +125,69 @@ class RecipeVariantStrict(BaseModel):
             s = _clip_text(_sanitize_step(s), MAX_STEP_TEXT)
             if s:
                 out.append(s)
-            if len(out) >= MAX_STRICT_STEPS:
-                break
-        
         return out
-
 
 class RecipeCardStrict(BaseModel):
     id: str
     title: str
     subtitle: str
     imageUrl: Optional[str] = None
-    tags: List[str] = Field(default_factory=list, max_items=MAX_TAGS)
+    tags: List[str] = Field(default_factory=list)   # 개수 제한 없음(변환기에서 자름)
     variant: RecipeVariantStrict
 
-def to_strict_card(card: Union["RecipeCard", dict]) -> "RecipeCardStrict":
+# --------------------------------
+# 변환기: 원본 → 표시용
+#  - 기본값은 "리스트용": 칩/스텝/태그를 컷
+#  - 모달에서는 limit_* = None 으로 넘겨 '풀데이터'
+# --------------------------------
+def to_strict_card(
+    card: Union["RecipeCard", dict],
+    *,
+    limit_tags: Optional[int] = MAX_TAGS,
+    limit_ingredients: Optional[int] = MAX_STRICT_CHIPS,
+    limit_steps: Optional[int] = MAX_STRICT_STEPS,
+) -> "RecipeCardStrict":
+    """
+    리스트/모달 공용 변환기.
+    - 리스트: 기본값 유지 (태그 MAX_TAGS, 칩 3, 스텝 3)
+    - 모달: limit_* = None → 개수 제한 해제
+    """
     d = card if isinstance(card, dict) else card.model_dump()
     v0 = (d.get("variants") or [{}])[0]
 
-    # 칩: 원본 → 없으면 태그에서 주재료만 추출
-    chips = (v0.get("key_ingredients") or [])[:MAX_STRICT_CHIPS]
-    if not chips:
-        main_set = set(CANON.get("main", []))
-        chips = [t for t in (d.get("tags") or []) if t in main_set][:MAX_STRICT_CHIPS]
+    # ---------- 태그 ----------
+    raw_tags = list(dict.fromkeys(d.get("tags") or []))
+    head_tags = build_display_tags(raw_tags, MAX_TAGS)
+    if limit_tags is not None:
+        head_tags = head_tags[:limit_tags]
 
+    # ---------- 칩(재료) ----------
+    chips = list(v0.get("key_ingredients") or [])
+    if not chips:
+        # 없으면 태그에서 주재료 후보 추출
+        main_set = set(CANON.get("main", []))
+        chips = [t for t in (head_tags or []) if t in main_set]
+    if limit_ingredients is not None:
+        chips = chips[:limit_ingredients]
+
+    # ---------- 요약/스텝 ----------
     summary = v0.get("summary") or d.get("subtitle") or ""
-    # 스텝: 원본 → 없으면 요약/제목으로 생성
     steps = v0.get("steps_compact") or v0.get("steps") or []
     if not steps:
+        # 완전 공백이면 3줄 기본 생성 (모달이어도 최초 생성은 3줄)
         steps = _fallback_steps(summary, d.get("title", ""))
+
+    # 노이즈 정리(가격/리뷰 등) + 텍스트 클립은 validator가 수행
+    # 개수 컷은 여기서 적용
+    if limit_steps is not None:
+        steps = steps[:limit_steps]
 
     return RecipeCardStrict(
         id=d.get("id",""),
         title=d.get("title",""),
         subtitle=d.get("subtitle",""),
         imageUrl=d.get("imageUrl"),
-        tags=(d.get("tags") or [])[:MAX_TAGS],
+        tags=head_tags,
         variant=RecipeVariantStrict(
             name=v0.get("name","기본"),
             key_ingredients=chips,

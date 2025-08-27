@@ -6,7 +6,7 @@
 from __future__ import annotations
 import asyncio
 import re
-import random  # ← 추가: 백오프용
+import random  # 백오프용
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urljoin, quote_plus
 
@@ -50,7 +50,7 @@ async def _allowed(url: str) -> bool:
         return False
 
 # ---------------------------------------------------------------------
-# 공용: 리트라이 GET (타임아웃 재시도 + 지수형 백오프 약간의 지터)
+# 공용: 리트라이 GET (타임아웃 재시도 + 지수형 백오프 + 지터)
 # ---------------------------------------------------------------------
 async def _get_with_retry(client: httpx.AsyncClient, url: str, tries: int = 3) -> httpx.Response:
     last: Optional[Exception] = None
@@ -61,7 +61,6 @@ async def _get_with_retry(client: httpx.AsyncClient, url: str, tries: int = 3) -
             last = e
             # 1.2, 2.4, 3.6초 + 작은 지터
             await asyncio.sleep(1.2 * (i + 1) + random.random() * 0.5)
-    # 마지막 예외 재던지기
     assert last is not None
     raise last
 
@@ -177,18 +176,31 @@ def _parse_detail(html: str) -> Tuple[List[str], List[str]]:
     # --- 재료 ---
     ings: List[str] = []
 
-    # (1) 대표 영역
+    # 1) ready_ingre3의 좌/우 컬럼 분리 케이스까지 지원
+    #    예: <li><span class="ingre_l">돼지고기</span><span class="ingre_r">300g</span></li>
     for li in soup.select(".ready_ingre3 ul li"):
-        txt = li.get_text(" ", strip=True)
-        txt = re.sub(r"\s*\([^)]+\)", "", txt)  # (소분류) 제거
+        left = li.select_one(".ingre_l")
+        right = li.select_one(".ingre_r")
+        if left or right:
+            ltxt = (left.get_text(" ", strip=True) if left else "").strip()
+            rtxt = (right.get_text(" ", strip=True) if right else "").strip()
+            txt = (ltxt + " " + rtxt).strip()
+        else:
+            txt = _clean(li.get_text(" ", strip=True))
+
+        # 괄호 보조설명 제거, 공백 정돈
+        txt = re.sub(r"\s*\([^)]+\)", "", txt)
         txt = re.sub(r"\s{2,}", " ", txt)
         txt = _clean(txt)
         if txt:
             ings.append(txt)
 
-    # (2) 대체 셀렉터들
+    # 2) 대체 셀렉터들 (페이지 구조 변형 대비)
     if not ings:
-        for sel in [".ingre_list li", ".lst_ingrd li", ".ingre_all li", ".cont_ingre li"]:
+        for sel in [
+            ".ingre_list li", ".lst_ingrd li", ".ingre_all li",
+            ".cont_ingre2 li", ".cont_ingre li"
+        ]:
             for li in soup.select(sel):
                 txt = _clean(li.get_text(" ", strip=True))
                 if txt:
@@ -198,14 +210,12 @@ def _parse_detail(html: str) -> Tuple[List[str], List[str]]:
 
     # --- 조리 과정 ---
     steps: List[str] = []
-
     # (1) view_step 계열
     for box in soup.select(".view_step .media, .view_step li, .view_step .step"):
         txt = _clean(box.get_text(" ", strip=True))
         txt = re.sub(r"^STEP\s*\d+\s*", "", txt, flags=re.I)
         if len(txt) >= 2:
             steps.append(txt)
-
     # (2) 대체: ol/li
     if not steps:
         for li in soup.select("ol li"):
@@ -219,8 +229,7 @@ async def _fetch_detail(client: httpx.AsyncClient, url: str) -> Tuple[List[str],
     if not await _allowed(url):
         return [], []
     await asyncio.sleep(DETAIL_WAIT)
-    # r = await client.get(url)  # ← 기존
-    r = await _get_with_retry(client, url, tries=3)  # ← 리트라이 적용
+    r = await _get_with_retry(client, url, tries=3)
     r.raise_for_status()
     return _parse_detail(r.text)
 
@@ -231,7 +240,7 @@ async def crawl_10000_by_ingredients(
     ingredients: List[str],
     tags: List[str],
     limit: int = 12,
-    fetch_details: bool = False,   # ← True면 상세까지 채움
+    fetch_details: bool = False,   # True면 상세까지 채움
 ) -> List[Dict]:
     query = _build_query(ingredients, tags)
     if not query:
@@ -254,8 +263,7 @@ async def crawl_10000_by_ingredients(
     ) as client:
         # 예의상 대기
         await asyncio.sleep(0.8)
-        # resp = await client.get(search_url)   # ← 기존
-        resp = await _get_with_retry(client, search_url, tries=3)  # ← 리트라이 적용
+        resp = await _get_with_retry(client, search_url, tries=3)
         resp.raise_for_status()
         html = resp.text
 
