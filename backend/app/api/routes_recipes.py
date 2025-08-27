@@ -7,6 +7,8 @@ import re
 import logging
 from fastapi import APIRouter, UploadFile, Request, HTTPException, Depends
 from bson import ObjectId
+from typing import Mapping, Any
+
 
 from app.db.init import get_db
 from app.core.deps import get_or_set_anon_id
@@ -32,6 +34,32 @@ PRICE_RE  = re.compile(r"(?<!\d)(?:\d{1,3}(?:[,\.\s]\d{3})+|\d+)\s*(?:원|krw)\b
 RATING_RE = re.compile(r"(?:평점\s*)?\b[0-5](?:\.\d)?\s*\([\d,]+\)")
 SHOP_RE   = re.compile(r"(구매|쿠폰|특가|배송|장바구니|마켓|스마트스토어|리뷰|광고|스폰|만개의레시피|요리사랑|815요리사랑)", re.I)
 BULLET_RE = re.compile(r"^\s*(?:\d+\s*[.)]|[-•●▪])\s*")
+
+def to_recipe_recommendation(doc: Mapping[str, Any]) -> dict:
+    rid = str(doc.get("_id") or doc.get("id") or "")
+    return {
+        "id": rid,
+        "title": doc.get("title", ""),
+        "description": doc.get("summary", "") or doc.get("description", ""),
+        "imageUrl": doc.get("imageUrl") or doc.get("image") or "",
+        "tags": (
+            doc.get("tags")
+            or doc.get("chips")
+            or doc.get("key_ingredients")
+            or []
+        ),
+        "ingredients": (
+            doc.get("ingredients_full")
+            or doc.get("ingredients")
+            or []
+        ),
+        "steps": (
+            doc.get("steps_full")
+            or doc.get("steps_compact")
+            or doc.get("steps")
+            or []
+        ),
+    }
 
 def _drop_noise_lines(lines: list[str]) -> list[str]:
     out: list[str] = []
@@ -326,6 +354,23 @@ async def recommend_files(
     items = await _recommend_from_imgs(img_bytes, db)
     return [_to_dict(it) for it in items]
 
+@router.post("/recommend/tokens")     #재료 배열 확인용
+async def recommend_from_tokens(
+    body: dict, db = Depends(get_db)
+):
+    tokens = normalize_ingredients_ko(body.get("tokens") or [])
+    cards = await hybrid_recommend(db, ingredients=tokens, limit=20)
+    return [to_recipe_recommendation(c) for c in cards]
+
+@router.get("/{rid}")
+async def get_recipe_full(rid: str, db=Depends(get_db)):
+    from bson import ObjectId
+    q = {"_id": ObjectId(rid)} if ObjectId.is_valid(rid) else {"id": rid}
+    doc = await db.recipe_cards.find_one(q)
+    if not doc:
+        raise HTTPException(404, "not found")
+    return to_recipe_recommendation(doc)
+
 # ------------------------------
 # Cards 전용 서브라우터
 # ------------------------------
@@ -359,8 +404,7 @@ def _strict_to_flat(c: RecipeCardStrict) -> RecipeRecommendationOut:
 
 # 정적/특수 경로를 먼저 선언 (경로 충돌 방지: /flat, /full → /{id})
 @cards.get("/flat", response_model=List[RecipeRecommendationOut])
-async def list_cards_flat(limit: int = 30):
-    db = get_db()
+async def list_cards_flat(limit: int = 30, db=Depends(get_db)):
     query = {
         "is_recipe": True,
         "source.site": {"$in": ["만개의레시피", "unknown"]},
@@ -400,8 +444,7 @@ async def list_cards_flat(limit: int = 30):
     return [_strict_to_flat(c).model_dump() for c in strict_cards]
 
 @cards.get("/{card_id}/flat", response_model=RecipeRecommendationOut)
-async def get_card_flat(card_id: str):
-    db = get_db()
+async def get_card_flat(card_id: str, db=Depends(get_db)):
     # ObjectId 시도 → 실패 시 문자열 id 필드로도 검색(하위호환)
     try:
         q = {"_id": ObjectId(card_id)}
@@ -422,7 +465,7 @@ async def get_card_flat(card_id: str):
 
 # 상세 모달용 ‘풀 조리과정’ (카드 id + 레시피 id 둘 다 지원)
 @cards.get("/{card_id}/full")
-async def get_card_full(card_id: str):
+async def get_card_full(card_id: str, db=Depends(get_db)):
     """
     상세 모달 전용:
       A) card_id가 recipe_cards._id → 카드 기반으로 구성
@@ -626,8 +669,7 @@ async def get_card_full(card_id: str):
 
 # 기본(스트릭트) 경로는 뒤에 선언
 @cards.get("", response_model=List[RecipeCardStrict])
-async def list_cards(limit: int = 30):
-    db = get_db()
+async def list_cards(limit: int = 30, db=Depends(get_db)):
     query = {
         "is_recipe": True,
         "source.site": {"$in": ["만개의레시피", "unknown"]},
@@ -649,8 +691,7 @@ async def list_cards(limit: int = 30):
     return [to_strict_card(d) for d in docs]
 
 @cards.get("/{card_id}", response_model=RecipeCardStrict)
-async def get_card(card_id: str):
-    db = get_db()
+async def get_card(card_id: str, db=Depends(get_db)):
     # _id 우선
     d = None
     try:
