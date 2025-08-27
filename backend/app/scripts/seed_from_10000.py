@@ -3,7 +3,6 @@ import asyncio
 import os
 import re
 import random
-import time
 from typing import List, Dict, Any, Iterable
 from datetime import datetime
 
@@ -82,15 +81,7 @@ COOK_CATS = [
 ]
 
 # 3) 검색 질 확장을 위한 “조합 전략”
-#    - 단일 재료
-#    - 단일 재료 + 카테고리
-#    - 단백질 + 채소
-#    - 단백질 + 채소 + 카테고리
-def _flatten(groups: List[List[str]]) -> List[str]:
-    return [t for g in groups for t in g]
-
 def _base_terms(groups: List[List[str]]) -> Iterable[List[str]]:
-    # 각 그룹에서 대표 1~2개만 사용(너무 폭발하지 않도록)
     for g in groups:
         tops = g[:2] if len(g) > 1 else g
         for t in tops:
@@ -141,46 +132,63 @@ def build_query_plan() -> List[Dict[str, Any]]:
         uniq_plan.append(q)
     return uniq_plan
 
+# ---------------------------------------------------------------------------
+# 문서화 & 업서트
+# ---------------------------------------------------------------------------
+def _extract_recipe_id(url: str) -> str | None:
+    m = re.search(r"/recipe/(\d+)", str(url))
+    return m.group(1) if m else None
+
+def _uniq(xs: List[str]) -> List[str]:
+    return list(dict.fromkeys([x for x in xs if x]))
 
 def make_doc(item: Dict[str, Any], terms: List[str], extra_tags: List[str]) -> Dict[str, Any]:
-    # /recipe/123456 → recipe_id 추출
-    rid = None
-    m = re.search(r"/recipe/(\d+)", str(item.get("url", "")))
-    if m:
-        rid = m.group(1)
-
-    # 태그: 검색어(정규화) + 사이트 태그 + 카테고리
+    """크롤 결과 → recipe_cards 문서 스키마로 변환"""
+    rid = _extract_recipe_id(item.get("url", ""))
     norm_terms = normalize_ingredients_ko(terms)
-    tags = [*norm_terms, *extra_tags, "만개의레시피"]
-    tags = list(dict.fromkeys([t for t in tags if t]))  # uniq & truthy
+
+    # 태그 = 검색어(정규화) + extra_tags + 출처 태그
+    tags = _uniq([*norm_terms, *extra_tags, "만개의레시피"])
+
+    # 상세 파싱 결과(옵션) 반영
+    ings = item.get("ingredients", []) or []
+    steps = item.get("steps", []) or []
 
     return {
         "title": item.get("title") or "",
         "summary": item.get("desc") or "",
         "imageUrl": item.get("thumbnail") or "",
         "tags": tags,
-        "ingredients": [],  # 라우터가 상세에서 보강
-        "steps": [],
+        "ingredients": ings,
+        "steps": steps,
         "source": {"site": "만개의레시피", "url": item.get("url"), "recipe_id": rid},
         "is_recipe": True,
-        "seeded_at": datetime.utcnow(),
     }
 
-
 async def seed_one_query(db, terms: List[str], extra_tags: List[str], limit: int) -> Dict[str, int]:
-    # 크롤
-    items = await crawl_10000_by_ingredients(terms, tags=[], limit=limit)
+    # 상세까지 긁어서 반환
+    items = await crawl_10000_by_ingredients(terms, tags=[], limit=limit, fetch_details=True)
     if not items:
         return {"matched": 0, "upserted": 0}
 
-    # 문서화
     docs = [make_doc(it, terms, extra_tags) for it in items if it.get("url")]
 
-    # 벌크 업서트 (source.url 기준)
+    # 벌크 upsert: source.url 기준
     ops = []
     for d in docs:
         q = {"source.url": d["source"]["url"]}
-        ops.append(UpdateOne(q, {"$setOnInsert": d}, upsert=True))
+        ops.append(
+            UpdateOne(
+                q,
+                {
+                    # 항상 최신 스냅샷을 반영
+                    "$set": d,
+                    # 최초 생성 시에만 seeded_at 기록
+                    "$setOnInsert": {"seeded_at": datetime.utcnow()},
+                },
+                upsert=True,
+            )
+        )
 
     matched = 0
     upserted = 0
@@ -190,85 +198,69 @@ async def seed_one_query(db, terms: List[str], extra_tags: List[str], limit: int
         upserted = len(res.upserted_ids or {})
     return {"matched": matched, "upserted": upserted}
 
-
+# ---------------------------------------------------------------------------
+# 인덱스
+# ---------------------------------------------------------------------------
 async def create_indexes(db):
     coll = db["recipe_cards"]
-    info = await coll.index_information()  # 현재 인덱스 목록
+    info = await coll.index_information()
 
     def has_key(key_pairs):
-        # key_pairs 예: [('source.url', 1)]
         return any(v.get("key") == key_pairs for v in info.values())
 
     async def safe_create(keys, **opts):
-        """
-        같은 키 인덱스가 이미 '다른 이름/옵션'으로 있어도 그냥 통과시키기 위해
-        85(IndexOptionsConflict)만 무시하는 래퍼
-        """
         try:
             return await coll.create_index(keys, **opts)
         except OperationFailure as e:
-            if getattr(e, "code", None) == 85:
+            if getattr(e, "code", None) == 85:  # IndexOptionsConflict
                 return None
             raise
 
-    # 1) source.url unique — 이미 있으면 스킵
+    # 1) source.url unique
     if not has_key([("source.url", 1)]):
         await safe_create([("source.url", 1)], unique=True, name="uniq_source_url")
 
-    # 2) source.recipe_id unique+sparse — 이미 있으면 스킵
-    #    (네 컬렉션에는 'source_recipe_id_1'로 존재)
+    # 2) source.recipe_id unique + sparse
     if not has_key([("source.recipe_id", 1)]):
         await safe_create([("source.recipe_id", 1)], unique=True, sparse=True, name="uniq_recipe_id")
 
-    # 3) tags 인덱스 — 이미 'tags_1'이 있으면 새로 안 만듦
+    # 3) tags 인덱스
     if not has_key([("tags", 1)]):
-        # 이름도 'tags_1'로 맞춰두면 이후 충돌 확률 ↓
         await safe_create([("tags", 1)], name="tags_1")
 
-    # 4) 텍스트 인덱스 — 몽고는 컬렉션당 text 인덱스 1개만 허용
+    # 4) 텍스트 인덱스(컬렉션당 1개)
     has_text = any(any(p[1] == "text" for p in v.get("key", [])) for v in info.values())
     if not has_text:
         await safe_create([("title", "text"), ("summary", "text")], name="txt_title_summary")
 
-
-async def bounded_gather(sema: asyncio.Semaphore, coro_fn, *args, **kwargs):
-    async with sema:
-        return await coro_fn(*args, **kwargs)
-
-
+# ---------------------------------------------------------------------------
+# 실행
+# ---------------------------------------------------------------------------
 async def main():
     cli = AsyncIOMotorClient(MONGO)
     db = cli[DBNAME]
 
     await create_indexes(db)
 
-    # 쿼리 플랜 구성
     plan = build_query_plan()
-    random.shuffle(plan)  # 특정 재료로 몰림 방지
+    random.shuffle(plan)
 
     sema = asyncio.Semaphore(CONCURRENCY)
-    tasks = []
-
     print(f"[seed] queries={len(plan)} limit={LIMIT_PER_QUERY} concurrency={CONCURRENCY}")
 
-    for q in plan:
-        terms = q["terms"]
-        extra_tags = q.get("tags", [])
-        tasks.append(
-            bounded_gather(sema, seed_one_query, db, terms, extra_tags, LIMIT_PER_QUERY)
-        )
+    async def _task(q):
+        async with sema:
+            return await seed_one_query(db, q["terms"], q.get("tags", []), LIMIT_PER_QUERY)
 
-    # 요청 사이에 가벼운 지연(사이트 보호 + 차단 방지)
-    # NOTE: crawl 함수 내부에서 rate-limit이 없다면 아래 sleep을 더 키워도 됨.
     results = []
-    for i in range(0, len(tasks), CONCURRENCY):
-        batch = tasks[i : i + CONCURRENCY]
-        results += await asyncio.gather(*batch)
+    # 배려: 배치 사이에 짧은 딜레이(크롤러 내부에도 rate-limit 있음)
+    for i in range(0, len(plan), CONCURRENCY):
+        batch = plan[i : i + CONCURRENCY]
+        results += await asyncio.gather(*[_task(q) for q in batch])
         await asyncio.sleep(0.8 + random.random() * 0.7)
 
     total_upserted = sum(r.get("upserted", 0) for r in results)
     print(f"[seed] done. upserted={total_upserted}, queries_tried={len(plan)}")
-
 
 if __name__ == "__main__":
     asyncio.run(main())

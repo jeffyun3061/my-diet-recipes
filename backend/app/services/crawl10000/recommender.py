@@ -5,10 +5,11 @@ import re
 import motor.motor_asyncio
 
 # -----------------------------------------------------------------------------
-# 하이브리드 추천 (정규화된 재료 토큰 기반 정규식 매칭 + 단순 점수화)
-# - 입력 토큰이 실제로 등장하는 카드만 반환 (무관한 보강 없음)
+# 하이브리드 추천 (정규화된 재료 토큰 기반 정규식 매칭 + AND 우선 재정렬)
+# - 입력 토큰이 실제로 등장하는 카드만 반환
 # - 배열/문서 혼합 스키마(ingredients가 list 또는 dict) 모두 지원
 # - 제목/태그/칩/재료/요약에 대한 매칭 개수를 점수로 환산해 정렬
+# - "모든 토큰이 등장(AND)" 문서를 먼저, 그 외(OR 매칭)는 보충으로 뒤에 배치
 # -----------------------------------------------------------------------------
 
 def _regex_union(words: List[str]) -> re.Pattern:
@@ -36,6 +37,29 @@ def _as_text(v: Any) -> str:
         return " ".join(parts)
     return str(v or "")
 
+def _searchable_text(doc: Dict[str, Any]) -> str:
+    """AND 판정을 위해 문서의 주요 검색 필드를 하나의 문자열로 합침."""
+    title = doc.get("title") or ""
+    tags  = _as_text(doc.get("tags"))
+    chips = _as_text(doc.get("chips"))
+    summ  = doc.get("summary") or ""
+    ings_text = " ".join([
+        _as_text(doc.get("ingredients_full")),
+        _as_text(doc.get("ingredients_clean")),
+        _as_text(doc.get("ingredients")),
+        _as_text(doc.get("ingredients", {}).get("raw") if isinstance(doc.get("ingredients"), dict) else None),
+        _as_text(doc.get("ingredients", {}).get("norm_ko") if isinstance(doc.get("ingredients"), dict) else None),
+        _as_text(doc.get("ingredients", {}).get("norm_slug") if isinstance(doc.get("ingredients"), dict) else None),
+    ])
+    return " ".join([title, tags, chips, ings_text, summ])
+
+def _contains_all(doc: Dict[str, Any], tokens: List[str]) -> bool:
+    """모든 토큰이 문서 텍스트에 등장하는지(AND) 체크."""
+    if not tokens:
+        return False
+    text = _searchable_text(doc)
+    return all(re.search(re.escape(t), text, re.I) for t in tokens)
+
 def _score(doc: Dict[str, Any], tokens: List[str]) -> float:
     """
     단순: 토큰이 등장한 필드 수/횟수로 점수화.
@@ -47,7 +71,6 @@ def _score(doc: Dict[str, Any], tokens: List[str]) -> float:
     chips = _as_text(doc.get("chips"))
     summ  = doc.get("summary") or ""
 
-    # ingredients가 배열 혹은 dict(raw/norm_ko/norm_slug)인 혼합 케이스 평탄화
     ings_text = " ".join([
         _as_text(doc.get("ingredients_full")),
         _as_text(doc.get("ingredients_clean")),
@@ -78,6 +101,7 @@ async def hybrid_recommend(
     입력 토큰(정규화된 재료명)이 문서(제목/태그/칩/재료/요약)에 등장하는지로 필터·랭킹.
     - 감자 같은 하드코딩/폴백 없음
     - 무관한 카드 보강 없음 (매칭된 것만 반환)
+    - 다중 재료 입력 시: 모든 토큰이 등장하는 문서(AND)를 먼저, 나머지(OR)는 뒤에
     """
     col = db["recipe_cards"]
 
@@ -89,7 +113,6 @@ async def hybrid_recommend(
     rx = _regex_union(tokens)
 
     # 1) 후보 쿼리: 배열/스칼라/중첩 경로 모두 커버
-    # 배열 필드는 {field: /regex/} 만으로 요소 매칭이 됨.
     q = {
         "$or": [
             {"ingredients_full": rx},            # array[str]
@@ -113,11 +136,21 @@ async def hybrid_recommend(
         "steps": 1, "steps_full": 1,
     }
 
-    # 2) 후보 로드
+    # 2) 후보 로드 (넓게)
     docs = await col.find(q, proj).limit(800).to_list(length=800)
 
-    # 3) 점수화 + 정렬
-    ranked = sorted(docs, key=lambda d: _score(d, tokens), reverse=True)
+    if not docs:
+        return []
 
-    # 4) 무관 보강 없이 상위 limit만 반환
-    return ranked[:limit]
+    # 3) AND 우선 분리
+    #    모든 토큰이 등장하는 문서(must) / 일부만 등장(rest)
+    must_docs = [d for d in docs if _contains_all(d, tokens)]
+    must_ids = {str(d.get("_id")) for d in must_docs}
+    rest_docs = [d for d in docs if str(d.get("_id")) not in must_ids]
+
+    # 4) 각 그룹 내부 점수화 + 정렬
+    must_sorted = sorted(must_docs, key=lambda d: _score(d, tokens), reverse=True)
+    rest_sorted = sorted(rest_docs, key=lambda d: _score(d, tokens), reverse=True)
+
+    # 5) 병합 후 상위 limit 반환
+    return (must_sorted + rest_sorted)[:limit]
