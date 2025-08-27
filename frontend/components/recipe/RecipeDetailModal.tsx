@@ -15,7 +15,7 @@ import {
 } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import type { RecipeRecommendation } from "@/types/image";
-import { fetchCardFull } from "@/lib/api";
+import { fetchCardFull, pickCardIdLoose } from "@/lib/api";
 import type { RecipeFull } from "@/lib/api";
 
 interface Props {
@@ -33,14 +33,14 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
   useEffect(() => {
     let alive = true;
 
-    async function load() {
-      if (!open || !recipe?.id) {
-        setFull(null);
-        setErr(null);
-        return;
-      }
-      const rid = String(recipe.id);
+    const rid = recipe ? pickCardIdLoose(recipe as any) : null;
+    if (!open || !rid) {
+      setFull(null);
+      setErr(null);
+      return;
+    }
 
+    (async () => {
       setLoading(true);
       setErr(null);
       try {
@@ -53,13 +53,12 @@ export default function RecipeDetailModal({ recipe, open, onClose }: Props) {
       } finally {
         if (alive) setLoading(false);
       }
-    }
+    })();
 
-    load();
     return () => {
       alive = false;
     };
-  }, [open, recipe?.id]);
+  }, [open, recipe]); // ← recipe.id가 아니라 recipe 자체를 의존
 
   if (!recipe) return null;
 

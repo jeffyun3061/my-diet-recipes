@@ -315,9 +315,18 @@ async def _search_recipes(db, tokens: List[str]) -> List[RecipeRecommendationOut
         ingredients = _clean_ingredients([str(x) for x in (c.get("ingredients") or [])], max_len=6)
         tags = [s for s in (str(t).strip() for t in (c.get("tags") or [])) if s][:6]
 
+        # ★ id 보정: _id → id → card_id → cardId
+        rid = str(
+            c.get("_id")
+            or c.get("id")
+            or c.get("card_id")
+            or c.get("cardId")
+            or ""
+        )
+
         out.append(
             RecipeRecommendationOut(
-                id=str(c.get("id", "")),
+                id=rid,
                 title=str(c.get("title", "")),
                 description=desc,
                 ingredients=ingredients,
@@ -551,19 +560,19 @@ async def get_card_full(card_id: str, db=Depends(get_db)):
                 return [p.strip() for p in parts if p.strip()]
             return []
 
-        # ---------- A) recipe_cards._id 로 시도 ----------
+        # ---------- A) recipe_cards._id → 실패 시 string id 로도 조회 ----------
+        proj = {
+            "_id": 1, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "chips": 1, "source": 1,
+            "steps_full": 1, "ingredients_full": 1, "variants": 1,
+            "steps": 1, "ingredients": 1,   # top-level 폴백용
+        }
         card = None
         try:
-            card = await db["recipe_cards"].find_one(
-                {"_id": ObjectId(card_id)},
-                {
-                    "_id": 1, "id": 1, "title": 1, "imageUrl": 1, "tags": 1, "chips": 1, "source": 1,
-                    "steps_full": 1, "ingredients_full": 1, "variants": 1,
-                    "steps": 1, "ingredients": 1,   # top-level 폴백용
-                }
-            )
+            card = await db["recipe_cards"].find_one({"_id": ObjectId(card_id)}, proj)
         except Exception:
-            card = None
+            pass
+        if not card:
+            card = await db["recipe_cards"].find_one({"id": card_id}, proj)
 
         if card:
             steps_full: list[str] = []
@@ -574,7 +583,7 @@ async def get_card_full(card_id: str, db=Depends(get_db)):
             if r:
                 steps_full = _drop_noise_lines(_steps_from_any(r))
 
-            # ★ 재료는 '원본 + 카드 + 보조소스(tags/chips)' 전부 모아서 한 번에 정리
+            # 재료는 '원본 + 카드 + 보조소스(tags/chips)' 전부 모아서 정리
             ing_sources: list[str] = []
             if r:
                 ing_sources += _ingredients_from_any(r)
@@ -629,7 +638,7 @@ async def get_card_full(card_id: str, db=Depends(get_db)):
 
             steps_full = _drop_noise_lines(_steps_from_any(r))
 
-            # ★ 재료: 원본 + 매핑카드(있다면) + 보조소스(tags/chips)
+            # 재료: 원본 + 매핑카드(있다면) + 보조소스(tags/chips)
             ing_sources: list[str] = []
             ing_sources += _ingredients_from_any(r)
 

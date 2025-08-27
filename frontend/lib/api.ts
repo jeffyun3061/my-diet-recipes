@@ -34,16 +34,16 @@ const _isObjId = (v: unknown) =>
   typeof v === "string" && /^[a-f0-9]{24}$/i.test(v);
 
 /** recipe_cards._id 우선 추출 (팀원 케이스 포함) */
-const _pickCardId = (r: any): string | null => {
-  if (_isObjId(r?.id)) return String(r.id); // 우리 백엔드: id = recipe_cards._id
+export const pickCardIdLoose = (r: any): string | null => {
   const cand =
+    r?.id ??
+    r?._id ??
     r?.cardId ??
     r?.card_id ??
     r?.card?._id ??
     r?.card?.id ??
-    r?._id ??
     null;
-  return _isObjId(cand) ? String(cand) : null;
+  return cand ? String(cand) : null;
 };
 
 /** variant 선택 (단일 variant 또는 variants[0]) */
@@ -113,7 +113,7 @@ const normalizeRecipe = (r: any): RecipeRecommendation => {
   ]);
 
   return {
-    id: String(_pickCardId(r) ?? ""),
+    id: String(pickCardIdLoose(r) ?? ""),
     title: String(r?.title ?? ""),
     description,
     ingredients,
