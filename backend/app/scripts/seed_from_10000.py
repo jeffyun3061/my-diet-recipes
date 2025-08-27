@@ -9,6 +9,7 @@ from datetime import datetime
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import UpdateOne
+from pymongo.errors import OperationFailure
 
 # --- 내부 crawler 모듈 경로 호환 (언더스코어/미들하이픈 혼용 대비) -----------------
 try:
@@ -28,8 +29,9 @@ except Exception:
 
 # ---------------------------------------------------------------------------
 
-MONGO  = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-DBNAME = os.getenv("MONGODB_DB", "mydiet")
+# 환경변수 우선(MONGODB_URI → MONGODB_URL), 없으면 도커 서비스명 기본값
+MONGO  = os.getenv("MONGODB_URI") or os.getenv("MONGODB_URL") or "mongodb://mydiet-mongo:27017"
+DBNAME = os.getenv("MONGODB_DB") or "mydiet"
 
 # 동시성(너무 높이면 사이트가 막힐 수 있음)
 CONCURRENCY = int(os.getenv("SEED_CONCURRENCY", "6"))
@@ -190,11 +192,43 @@ async def seed_one_query(db, terms: List[str], extra_tags: List[str], limit: int
 
 
 async def create_indexes(db):
-    # 중복 방지 + 검색 속도
-    await db["recipe_cards"].create_index("source.url", unique=True, name="uniq_source_url")
-    await db["recipe_cards"].create_index("source.recipe_id", unique=True, sparse=True, name="uniq_recipe_id")
-    await db["recipe_cards"].create_index([("tags", 1)], name="idx_tags")
-    await db["recipe_cards"].create_index([("title", "text"), ("summary", "text")], name="txt_title_summary")
+    coll = db["recipe_cards"]
+    info = await coll.index_information()  # 현재 인덱스 목록
+
+    def has_key(key_pairs):
+        # key_pairs 예: [('source.url', 1)]
+        return any(v.get("key") == key_pairs for v in info.values())
+
+    async def safe_create(keys, **opts):
+        """
+        같은 키 인덱스가 이미 '다른 이름/옵션'으로 있어도 그냥 통과시키기 위해
+        85(IndexOptionsConflict)만 무시하는 래퍼
+        """
+        try:
+            return await coll.create_index(keys, **opts)
+        except OperationFailure as e:
+            if getattr(e, "code", None) == 85:
+                return None
+            raise
+
+    # 1) source.url unique — 이미 있으면 스킵
+    if not has_key([("source.url", 1)]):
+        await safe_create([("source.url", 1)], unique=True, name="uniq_source_url")
+
+    # 2) source.recipe_id unique+sparse — 이미 있으면 스킵
+    #    (네 컬렉션에는 'source_recipe_id_1'로 존재)
+    if not has_key([("source.recipe_id", 1)]):
+        await safe_create([("source.recipe_id", 1)], unique=True, sparse=True, name="uniq_recipe_id")
+
+    # 3) tags 인덱스 — 이미 'tags_1'이 있으면 새로 안 만듦
+    if not has_key([("tags", 1)]):
+        # 이름도 'tags_1'로 맞춰두면 이후 충돌 확률 ↓
+        await safe_create([("tags", 1)], name="tags_1")
+
+    # 4) 텍스트 인덱스 — 몽고는 컬렉션당 text 인덱스 1개만 허용
+    has_text = any(any(p[1] == "text" for p in v.get("key", [])) for v in info.values())
+    if not has_text:
+        await safe_create([("title", "text"), ("summary", "text")], name="txt_title_summary")
 
 
 async def bounded_gather(sema: asyncio.Semaphore, coro_fn, *args, **kwargs):
