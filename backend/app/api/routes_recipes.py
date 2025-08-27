@@ -2,13 +2,13 @@
 # 사진 업로드 → LLM으로 재료 추출 → 재료 정규화 → DB 검색 → 카드 배열 반환
 
 from __future__ import annotations
-from typing import List, Dict, Any, Optional, Mapping
+from typing import List, Dict, Any, Optional
 import re
 import logging
-
-from fastapi import APIRouter, UploadFile, Request, HTTPException, Depends, Path
+from fastapi import APIRouter, UploadFile, Request, HTTPException, Depends
 from bson import ObjectId
-from fastapi import HTTPException
+from typing import Mapping, Any
+
 
 from app.db.init import get_db
 from app.core.deps import get_or_set_anon_id
@@ -17,7 +17,7 @@ from app.services.crawl10000.recommender import hybrid_recommend
 from app.services.vision_openai import extract_ingredients_from_images, VisionNotReady
 from app.services.crawl10000.seed_ing import normalize_ingredients_ko
 
-# 카드 스키마 (표시용 3~4 태그/요약/단계 컷) + 모달 풀데이터 옵션 지원
+# 카드 스키마 (표시용 3~4 태그/요약/단계 컷)
 from app.models.schemas import RecipeCardStrict, to_strict_card
 
 log = logging.getLogger(__name__)
@@ -354,7 +354,7 @@ async def recommend_files(
     items = await _recommend_from_imgs(img_bytes, db)
     return [_to_dict(it) for it in items]
 
-@router.post("/recommend/tokens")     # 재료 배열 확인용
+@router.post("/recommend/tokens")     #재료 배열 확인용
 async def recommend_from_tokens(
     body: dict, db = Depends(get_db)
 ):
@@ -364,96 +364,12 @@ async def recommend_from_tokens(
 
 @router.get("/{rid}")
 async def get_recipe_full(rid: str, db=Depends(get_db)):
+    from bson import ObjectId
     q = {"_id": ObjectId(rid)} if ObjectId.is_valid(rid) else {"id": rid}
     doc = await db.recipe_cards.find_one(q)
     if not doc:
         raise HTTPException(404, "not found")
     return to_recipe_recommendation(doc)
-
-# ------------------------------
-# 모달 전용 "풀데이터" 엔드포인트 (신규)
-# ------------------------------
-
-@router.get("/card/{id}", response_model=RecipeCardStrict)
-async def get_card_full_modal(
-    id: str = Path(..., description="recipe_cards의 _id(ObjectId) 또는 문자열 id"),
-    db = Depends(get_db),
-):
-    """
-    모달 전용 상세 카드:
-    - 리스트에서는 3줄/6개 컷으로 가볍게.
-    - 모달을 열 때는 풀데이터(태그/재료/스텝 제한 해제)로 내려준다.
-    """
-    doc = None
-    if ObjectId.is_valid(id):
-        doc = await db["recipe_cards"].find_one(
-            {"_id": ObjectId(id)},
-            {
-                "id": 1, "title": 1, "subtitle": 1, "tags": 1,
-                "imageUrl": 1, "variants": 1,
-                "ingredients": 1, "ingredients_full": 1,
-                "steps": 1, "steps_full": 1,
-            }
-        )
-    if not doc:
-        doc = await db["recipe_cards"].find_one(
-            {"id": id},
-            {
-                "id": 1, "title": 1, "subtitle": 1, "tags": 1,
-                "imageUrl": 1, "variants": 1,
-                "ingredients": 1, "ingredients_full": 1,
-                "steps": 1, "steps_full": 1,
-            }
-        )
-    if not doc:
-        raise HTTPException(status_code=404, detail="not found")
-
-    # 컨벤션: 첫 variant만 유지 (다중 변형 시)
-    if isinstance(doc.get("variants"), list):
-        doc["variants"] = doc["variants"][:1]
-
-    # 태그는 넉넉히(20), 재료/스텝은 None으로 넘겨 '제한 해제'
-    return to_strict_card(
-        doc,
-        limit_tags=20,
-        limit_ingredients=None,
-        limit_steps=None,
-    )
-
-# /recipes/{recipe_id} GET
-@router.get("/recipes/{rid}", response_model=RecipeRecommendationOut)
-async def get_recipe(rid: str):
-    db = get_db()
-
-    # 1) _id 시도
-    doc = None
-    try:
-        doc = await db["recipes"].find_one({"_id": ObjectId(rid)})
-    except Exception:
-        pass
-
-    # 2) 외부 id 시도
-    if not doc:
-        doc = await db["recipes"].find_one({"id": rid})
-
-    # 3) source 기반 시도 (필드명이 다르면 맞춰 바꾸세요)
-    if not doc:
-        doc = await db["recipes"].find_one({"source.id": rid}) \
-           or await db["recipes"].find_one({"source.url": rid})
-
-    if not doc:
-        raise HTTPException(404, "recipe not found")
-
-    # ✱ 모달: 슬라이스 없이 전체 반환
-    return {
-        "id": str(doc.get("_id") or doc.get("id")),
-        "title": doc.get("title",""),
-        "description": doc.get("description") or doc.get("desc") or "",
-        "imageUrl": doc.get("imageUrl") or doc.get("thumbnail"),
-        "tags": doc.get("tags") or [],
-        "ingredients": doc.get("ingredients") or [],
-        "steps": doc.get("steps") or [],
-    }
 
 # ------------------------------
 # Cards 전용 서브라우터
@@ -555,7 +471,8 @@ async def get_card_full(card_id: str, db=Depends(get_db)):
       A) card_id가 recipe_cards._id → 카드 기반으로 구성
       B) card_id가 recipes._id       → 원본 기반 구성 + 역매핑으로 카드 찾아 최종 폴백
     """
-    # 주: cards 서브라우터 내부에서는 Depends로 받은 db 사용
+    db = get_db()
+
     def _list_from(d, keys: list[str] = []) -> list[str]:
         if isinstance(d, dict):
             for k in keys:
@@ -625,7 +542,7 @@ async def get_card_full(card_id: str, db=Depends(get_db)):
             if not ingredients_full:
                 ingredients_full = _clean_ingredients([str(x).strip() for x in (v0.get("key_ingredients") or []) if str(x).strip()], max_len=None)
 
-        # 필요시 on-demand 백필 저장
+        # persist on-demand fill (A-branch)
         try:
             to_set: Dict[str, Any] = {}
             if steps_full and not (card.get("steps_full") or []):
