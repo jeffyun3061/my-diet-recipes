@@ -1,5 +1,5 @@
 // app/layout.tsx
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { ReactNode } from "react";
 import { CssBaseline } from "@mui/material";
@@ -7,13 +7,20 @@ import ThemeRegistry from "@/components/ThemeRegistry";
 import AppHeader from "@/components/AppHeader";
 import BottomNav from "@/components/BottomNav";
 import { Box } from "@mui/material";
+import BackgroundVideoWithControls from "@/components/BackgroundVideoWithControls";
 
 export const metadata: Metadata = {
   title: "My Mobile Web",
   description: "Mobile-like web with Next.js + MUI",
-  viewport:
-    "width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1",
   icons: { icon: "/favicon.ico" },
+};
+
+// ✅ viewport는 별도 export
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+  maximumScale: 1,
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -22,6 +29,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <ThemeRegistry>
           <CssBaseline />
+          <BackgroundVideoWithControls />
 
           {/* 메인 컨테이너 - 중앙 정렬 */}
           <Box

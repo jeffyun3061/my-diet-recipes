@@ -3,6 +3,14 @@
 
 from app.db.init import get_db
 
+# 카드 컬렉션 인덱스
+async def ensure_recipe_card_indexes(db):
+    col = db["recipe_cards"]
+    await col.create_index("id", unique=True)
+    await col.create_index("source.recipe_id", unique=True, sparse=True)
+    await col.create_index([("title", 1)])
+    await col.create_index([("tags", 1)])
+
 async def ensure_indexes():
     db = get_db()
 
@@ -19,3 +27,7 @@ async def ensure_indexes():
     await db["images"].create_index([("anon_id", 1), ("created_at", -1)])
     await db["image_analyses"].create_index("image_id")
     await db["image_analyses"].create_index([("status", 1), ("created_at", -1)])
+
+    # 카드 컬렉션 인덱스
+    await ensure_recipe_card_indexes(db)
+
