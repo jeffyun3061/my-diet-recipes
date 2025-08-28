@@ -5,6 +5,9 @@ import { Box, Typography, Stack } from "@mui/material";
 import ImageIcon from "@mui/icons-material/Image";
 import ImageThumbnail from "./ImageThumbnail";
 import type { UploadedImage } from "@/types/image";
+import EggIcon from "@mui/icons-material/Egg";
+import EggAltIcon from "@mui/icons-material/EggAlt";
+import LocalDiningIcon from "@mui/icons-material/LocalDining";
 
 interface Props {
   images: UploadedImage[];
@@ -24,12 +27,13 @@ export default function ImageGrid({ images, onRemoveImage }: Props) {
           color: "text.secondary",
         }}
       >
-        <ImageIcon sx={{ fontSize: 64, mb: 2, opacity: 0.5 }} />
+        {/* <ImageIcon sx={{ fontSize: 64, mb: 2, opacity: 0.5 }} /> */}
+        <EggIcon sx={{ fontSize: 96, mb: 2, opacity: 0.5 }} />
         <Typography variant="h6" gutterBottom>
-          사진을 업로드해주세요
+          재료의 사진을 보여주세요
         </Typography>
         <Typography variant="body2" textAlign="center">
-          음식 사진을 올리면 맞춤 레시피를 추천해드려요
+          음식 사진을 올리면 AI로 맞춤 레시피를 추천해드려요
         </Typography>
       </Box>
     );

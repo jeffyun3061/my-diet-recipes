@@ -1,3 +1,4 @@
+// components path: frontend/app/flows/personal-details/chat/page.tsx
 "use client";
 
 import {
@@ -19,6 +20,9 @@ import CloseIcon from "@mui/icons-material/Close";
 import ChatBubble from "@/components/ChatBubble";
 import { DIET_OPTIONS, type DietOption } from "@/data/dietOptions";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
+import { postPreferences } from "@/lib/api";
+import { useUserStore } from "@/stores/userStore";
 
 type Message = { role: "user" | "bot"; text: string };
 type Step =
@@ -59,14 +63,18 @@ export default function ChatInputPage() {
     diet: "",
   });
   const [initialized, setInitialized] = useState(false);
+  const [submitting, setSubmitting] = useState(false); // ★ 추가
   const listRef = useRef<HTMLDivElement>(null);
 
-  // 메시지 추가 함수
+  const router = useRouter(); // ★ 추가
+  const setPersonalInfo = useUserStore((s) => s.setPersonalInfo); // ★ 추가 (전역 상태)
+
+  // 메시지 추가
   const addMessage = useCallback((role: "user" | "bot", text: string) => {
     setMessages((prev) => [...prev, { role, text }]);
   }, []);
 
-  // 초기화 - 한 번만 실행
+  // 초기 안내 메시지
   useEffect(() => {
     if (!initialized) {
       addMessage(
@@ -77,14 +85,14 @@ export default function ChatInputPage() {
     }
   }, [initialized, addMessage]);
 
-  // 스크롤 자동 이동
+  // 스크롤 하단 고정
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
   }, [messages]);
 
-  // 성별 선택 핸들러
+  // 성별 선택
   const handleGenderSelect = useCallback(
     (gender: { value: string; label: string }) => {
       addMessage("user", gender.label);
@@ -102,7 +110,7 @@ export default function ChatInputPage() {
     [addMessage]
   );
 
-  // 확인 단계 핸들러
+  // 확인 선택
   const handleConfirmSelect = useCallback(
     (confirm: { value: string; label: string }) => {
       addMessage("user", confirm.label);
@@ -139,18 +147,10 @@ export default function ChatInputPage() {
     [addMessage]
   );
 
-  // 단계별 처리 로직
+  // 단계별 입력 처리
   const processInput = useCallback(
     (text: string) => {
-      if (step === "gender") {
-        setTimeout(
-          () => addMessage("bot", "위의 버튼 중에서 선택해주세요! 👆"),
-          150
-        );
-        return;
-      }
-
-      if (step === "confirm") {
+      if (step === "gender" || step === "confirm") {
         setTimeout(
           () => addMessage("bot", "위의 버튼 중에서 선택해주세요! 👆"),
           150
@@ -295,7 +295,7 @@ export default function ChatInputPage() {
     setInitialized(false);
   }, []);
 
-  // 성별 버튼들
+  // 성별 버튼
   const genderButtons = useMemo(
     () =>
       step === "gender"
@@ -319,7 +319,7 @@ export default function ChatInputPage() {
     [step, handleGenderSelect]
   );
 
-  // 확인 버튼들
+  // 확인 버튼
   const confirmButtons = useMemo(
     () =>
       step === "confirm"
@@ -346,7 +346,7 @@ export default function ChatInputPage() {
     [step, handleConfirmSelect]
   );
 
-  // 다이어트 선택 칩들
+  // 다이어트 칩
   const dietChips = useMemo(
     () =>
       step === "diet"
@@ -374,6 +374,52 @@ export default function ChatInputPage() {
 
   const canInput =
     step !== "summary" && step !== "gender" && step !== "confirm";
+
+  // ★ 핵심: 개인정보 저장 + 다음 화면 이동
+  const handleNextStep = useCallback(async () => {
+    if (submitting) return;
+    const { gender, age, height, weight, diet } = userData;
+    if (!gender || age == null || height == null || weight == null || !diet) {
+      alert("입력 정보가 부족합니다. 성별/나이/키/몸무게/다이어트를 모두 입력해주세요.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+
+      const sexLabel =
+        GENDER_OPTIONS.find((g) => g.value === gender)?.label ?? "남성";
+      const dietLabel =
+        DIET_OPTIONS.find((d) => d.value === diet)?.label ?? diet;
+
+      // 1) 서버 저장
+      await postPreferences({
+        sex: sexLabel,
+        age: Number(age),
+        heightCm: Number(height),
+        weightKg: Number(weight),
+        diet: dietLabel,
+      });
+
+      // 2) 전역 상태 보관 (카메라/추천 페이지에서 사용)
+      setPersonalInfo({
+        sex: sexLabel,
+        age: Number(age),
+        heightCm: Number(height),
+        weightKg: Number(weight),
+        diet: dietLabel,
+      });
+
+      // 3) 다음 단계로
+      router.push("/recipes");
+    } catch (e) {
+      const msg =
+        e instanceof Error ? e.message : "개인정보 저장 중 오류가 발생했습니다.";
+      alert(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [userData, submitting, setPersonalInfo, router]);
 
   return (
     <Box sx={{ pb: 2 }}>
@@ -420,7 +466,7 @@ export default function ChatInputPage() {
               <Box sx={{ mt: 1, mb: 1 }}>{confirmButtons}</Box>
             )}
 
-            {/* 다이어트 선택 칩들 */}
+            {/* 다이어트 칩들 */}
             {dietChips.length > 0 && (
               <Stack
                 direction="row"
@@ -460,8 +506,13 @@ export default function ChatInputPage() {
             </Box>
           ) : (
             <Stack alignItems="center">
-              <Button variant="contained" size="small">
-                다음 단계 진행
+              <Button
+                variant="contained"
+                size="small"
+                onClick={handleNextStep}
+                disabled={submitting}
+              >
+                {submitting ? "저장 중..." : "다음 단계 진행"}
               </Button>
             </Stack>
           )}
