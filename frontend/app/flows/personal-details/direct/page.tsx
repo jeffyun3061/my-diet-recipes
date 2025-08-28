@@ -14,9 +14,16 @@ import {
 } from "@mui/material";
 import { DIET_OPTIONS } from "@/data/dietOptions";
 import { useState } from "react";
+<<<<<<< HEAD
 import { useRouter } from "next/navigation"; // 추가
 import { postPreferences } from "@/lib/api"; // 추가
 import { useUserStore } from "@/stores/userStore"; // 추가
+=======
+import { useRouter } from "next/navigation";
+import { postPreferences } from "@/lib/api";
+// 입력 완료 후 CameraButton 등에서 인식할 수 있도록 전역 상태 저장
+import { useUserStore } from "@/stores/userStore";
+>>>>>>> origin/feature/jiyong
 
 export default function DirectInputPage() {
   const [gender, setGender] = useState<string>("");
@@ -24,22 +31,32 @@ export default function DirectInputPage() {
   const [height, setHeight] = useState("160");
   const [weight, setWeight] = useState("50");
   const [diet, setDiet] = useState("");
+<<<<<<< HEAD
   const [submitting, setSubmitting] = useState(false); // 추가
   const router = useRouter(); // 추가
   const setPersonalInfo = useUserStore((state) => state.setPersonalInfo); // 추가
+=======
+  const [submitting, setSubmitting] = useState(false);
+
+  const router = useRouter();
+  const setPersonalInfo = useUserStore((s) => s.setPersonalInfo); // 전역 상태 저장 함수
+>>>>>>> origin/feature/jiyong
 
   const handleGenderChange = (
-    event: React.MouseEvent<HTMLElement>,
+    _e: React.MouseEvent<HTMLElement>,
     newGender: string | null
   ) => {
-    if (newGender !== null) {
-      setGender(newGender);
-    }
+    if (newGender !== null) setGender(newGender);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
+<<<<<<< HEAD
     //async 로 변경
     e.preventDefault();
+=======
+    e.preventDefault();
+    if (submitting) return; // 중복 제출 방지
+>>>>>>> origin/feature/jiyong
 
     if (!gender) {
       alert("성별을 선택해주세요.");
@@ -54,6 +71,7 @@ export default function DirectInputPage() {
     const sexLabel = gender === "male" ? "남성" : "여성";
     const dietLabel = DIET_OPTIONS.find((o) => o.value === diet)?.label ?? diet;
 
+<<<<<<< HEAD
     try {
       setSubmitting(true);
 
@@ -88,6 +106,54 @@ export default function DirectInputPage() {
           ? err.message
           : "개인정보 저장 중 오류가 발생했습니다."
       );
+=======
+    // 숫자 파싱(빈 값/NaN 방지)
+    const ageNum = Number(age);
+    const heightNum = Number(height);
+    const weightNum = Number(weight);
+    if (
+      Number.isNaN(ageNum) ||
+      Number.isNaN(heightNum) ||
+      Number.isNaN(weightNum)
+    ) {
+      alert("나이/키/몸무게를 올바르게 입력해주세요.");
+      return;
+    }
+
+    try {
+      setSubmitting(true);
+
+      // 1) DB 저장 (기존 그대로 유지)
+      await postPreferences({
+        sex: sexLabel,
+        age: ageNum,
+        heightCm: heightNum,
+        weightKg: weightNum,
+        diet: dietLabel, // 예: "저탄고지"
+      });
+
+      // 2) 상태 저장(성공시에만) — CameraButton에서 '개인정보 있음'으로 인식
+      setPersonalInfo({
+        sex: sexLabel,
+        age: ageNum,
+        heightCm: heightNum,
+        weightKg: weightNum,
+        diet: dietLabel,
+      });
+
+      // (선택) 새로고침 대비: 추후 필요하면 localStorage로도 보존 가능
+      // localStorage.setItem("personalInfo", JSON.stringify({ ... }))
+
+      alert("입력이 완료되었습니다.");
+      // 3) 업로드/추천 화면으로 이동
+      router.push("/recipes");
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : "개인정보 저장 중 오류가 발생했습니다.";
+      alert(msg);
+>>>>>>> origin/feature/jiyong
     } finally {
       setSubmitting(false);
     }
@@ -121,9 +187,7 @@ export default function DirectInputPage() {
                     "&.Mui-selected": {
                       bgcolor: "primary.main",
                       color: "primary.contrastText",
-                      "&:hover": {
-                        bgcolor: "primary.dark",
-                      },
+                      "&:hover": { bgcolor: "primary.dark" },
                     },
                   },
                 }}
@@ -152,12 +216,7 @@ export default function DirectInputPage() {
             <TextField
               label="키(cm)"
               type="number"
-              inputProps={{
-                inputMode: "numeric",
-                min: 100,
-                max: 250,
-                step: "1",
-              }}
+              inputProps={{ inputMode: "numeric", min: 100, max: 250, step: "1" }}
               value={height}
               onChange={(e) => setHeight(e.target.value)}
               required
@@ -168,12 +227,7 @@ export default function DirectInputPage() {
             <TextField
               label="몸무게(kg)"
               type="number"
-              inputProps={{
-                inputMode: "numeric",
-                min: 20,
-                max: 300,
-                step: "0.5",
-              }}
+              inputProps={{ inputMode: "numeric", min: 20, max: 300, step: "0.5" }}
               value={weight}
               onChange={(e) => setWeight(e.target.value)}
               required
@@ -196,8 +250,13 @@ export default function DirectInputPage() {
               ))}
             </TextField>
 
-            <Button type="submit" variant="contained" size="large">
-              입력 완료
+            <Button
+              type="submit"
+              variant="contained"
+              size="large"
+              disabled={submitting} // 중복 제출 방지
+            >
+              {submitting ? "저장 중..." : "입력 완료"}
             </Button>
           </Stack>
         </CardContent>
